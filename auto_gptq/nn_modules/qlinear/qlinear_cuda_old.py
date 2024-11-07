@@ -49,14 +49,14 @@ class QuantLinear(nn.Module):
 
         self.register_buffer(
             "qweight",
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
+            torch.zeros(( (infeatures * self.bits) // 32, outfeatures), dtype=torch.int32),
         )
         self.register_buffer(
             "qzeros",
             torch.zeros(
                 (
                     math.ceil(infeatures / self.group_size),
-                    outfeatures // 32 * self.bits,
+                    (outfeatures * self.bits) // 32,
                 ),
                 dtype=torch.int32,
             ),
@@ -131,7 +131,7 @@ class QuantLinear(nn.Module):
 
         i = 0
         row = 0
-        qweight = np.zeros((intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32)
+        qweight = np.zeros(((intweight.shape[0]  * self.bits) // 32, intweight.shape[1]), dtype=np.uint32)
         while row < qweight.shape[0]:
             if self.bits in [2, 4, 8]:
                 for j in range(i, i + (32 // self.bits)):
@@ -165,7 +165,7 @@ class QuantLinear(nn.Module):
 
         zeros -= 1
         zeros = zeros.numpy().astype(np.uint32)
-        qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
+        qzeros = np.zeros((zeros.shape[0], (zeros.shape[1] * self.bits) // 32), dtype=np.uint32)
         i = 0
         col = 0
         while col < qzeros.shape[1]:
@@ -297,7 +297,7 @@ class QuantLinear(nn.Module):
                     torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
                     self.wf.unsqueeze(0),
                 ).to(torch.int16 if self.bits == 8 else torch.int8)
-
+                # print("zeros", zeros.shape)
                 zeros = zeros + 1
                 zeros = torch.bitwise_and(
                     zeros, (2**self.bits) - 1

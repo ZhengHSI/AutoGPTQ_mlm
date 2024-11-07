@@ -2,6 +2,8 @@ from inspect import signature
 from typing import Dict, Optional, Union
 
 from ._base import BaseGPTQForCausalLM, BaseQuantizeConfig
+from ._base_mlm import BaseGPTQForCausalMLM
+from ._base_vit import BaseGPTQForVIT
 from ._utils import check_and_get_model_type
 from .baichuan import BaiChuanGPTQForCausalLM
 from .bloom import BloomGPTQForCausalLM
@@ -31,7 +33,8 @@ from .starcoder2 import Starcoder2GPTQForCausalLM
 from .xverse import XverseGPTQForCausalLM
 from .yi import YiGPTQForCausalLM
 from .minicpm3 import MiniCPM3GPTQForCausalLM
-
+from .minicpmv_llama import MiniCPMVGPTQ_Llama3
+from .vit import VITGPTQ
 
 GPTQ_CAUSAL_LM_MODEL_MAP = {
     "bloom": BloomGPTQForCausalLM,
@@ -64,6 +67,8 @@ GPTQ_CAUSAL_LM_MODEL_MAP = {
     "gemma2": Gemma2GPTQForCausalLM,
     "phi": PhiGPTQForCausalLM,
     "mpt": MPTGPTQForCausalLM,
+    "minicpmv": MiniCPMVGPTQ_Llama3,
+    "vit": VITGPTQ
 }
 
 
@@ -168,5 +173,211 @@ class AutoGPTQForCausalLM:
             **keywords,
         )
 
+#用于多模态模型的量化
+class AutoGPTQForCausalMLM:
+    def __init__(self):
+        raise EnvironmentError(
+            "AutoGPTQForCausalMLM is designed to be instantiated\n"
+            "using `AutoGPTQModelForCausalLM.from_pretrained` if want to quantize a pretrained model.\n"
+            "using `AutoGPTQModelForCausalLM.from_quantized` if want to inference with quantized model."
+        )
 
-__all__ = ["AutoGPTQForCausalLM"]
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        quantize_config: BaseQuantizeConfig,
+        max_memory: Optional[dict] = None,
+        trust_remote_code: bool = False,
+        **model_init_kwargs,
+    ) -> BaseGPTQForCausalMLM:
+        #获得模型的类型
+        model_type = check_and_get_model_type(pretrained_model_name_or_path, True)
+        return GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_pretrained(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            quantize_config=quantize_config,
+            max_memory=max_memory,
+            trust_remote_code=trust_remote_code,
+            **model_init_kwargs,
+        )
+
+    @classmethod
+    def from_quantized(
+        cls,
+        model_name_or_path: Optional[str],
+        device_map: Optional[Union[str, Dict[str, Union[str, int]]]] = None,
+        max_memory: Optional[dict] = None,
+        device: Optional[Union[str, int]] = None,
+        low_cpu_mem_usage: bool = False,
+        use_triton: bool = False,
+        inject_fused_attention: bool = False,
+        inject_fused_mlp: bool = False,
+        use_cuda_fp16: bool = True,
+        quantize_config: Optional[BaseQuantizeConfig] = None,
+        model_basename: Optional[str] = None,
+        use_safetensors: bool = True,
+        trust_remote_code: bool = False,
+        warmup_triton: bool = False,
+        trainable: bool = False,
+        disable_exllama: Optional[bool] = None,
+        disable_exllamav2: bool = False,
+        use_marlin: bool = False,
+        use_tritonv2: bool = False,
+        **kwargs,
+    ) -> BaseGPTQForCausalMLM:
+        # If disable_exllamav2 is True, we want to fall back on the exllama kernel and not the cuda/cuda_old ones.
+        if disable_exllama is None:
+            if disable_exllamav2:
+                disable_exllama = False
+            else:
+                disable_exllama = True
+
+        model_type = check_and_get_model_type(model_name_or_path, trust_remote_code)
+        quant_func = GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_quantized
+        # A static list of kwargs needed for huggingface_hub
+        huggingface_kwargs = [
+            "cache_dir",
+            "force_download",
+            "proxies",
+            "resume_download",
+            "local_files_only",
+            "use_auth_token",
+            "revision",
+            "subfolder",
+            "_raise_exceptions_for_missing_entries",
+            "_commit_hash",
+        ]
+        # TODO: do we need this filtering of kwargs? @PanQiWei is there a reason we can't just pass all kwargs?
+        keywords = {
+            key: kwargs[key]
+            for key in list(signature(quant_func).parameters.keys()) + huggingface_kwargs
+            if key in kwargs
+        }
+        return quant_func(
+            model_name_or_path=model_name_or_path,
+            device_map=device_map,
+            max_memory=max_memory,
+            device=device,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            use_triton=use_triton,
+            inject_fused_attention=inject_fused_attention,
+            inject_fused_mlp=inject_fused_mlp,
+            use_cuda_fp16=use_cuda_fp16,
+            quantize_config=quantize_config,
+            model_basename=model_basename,
+            use_safetensors=use_safetensors,
+            trust_remote_code=trust_remote_code,
+            warmup_triton=warmup_triton,
+            trainable=trainable,
+            disable_exllama=disable_exllama,
+            disable_exllamav2=disable_exllamav2,
+            use_marlin=use_marlin,
+            use_tritonv2=use_tritonv2,
+            **keywords,
+        )
+
+#用于多模态模型的量化
+class AutoGPTQForVIT:
+    def __init__(self):
+        raise EnvironmentError(
+            "AutoGPTQForVIT is designed to be instantiated\n"
+            "using `AutoGPTQForVIT.from_pretrained` if want to quantize a pretrained model.\n"
+            "using `AutoGPTQForVIT.from_quantized` if want to inference with quantized model."
+        )
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        quantize_config: BaseQuantizeConfig,
+        max_memory: Optional[dict] = None,
+        trust_remote_code: bool = False,
+        **model_init_kwargs,
+    ) -> BaseGPTQForVIT:
+        #获得模型的类型
+        model_type = "vit"
+        return GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_pretrained(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            quantize_config=quantize_config,
+            max_memory=max_memory,
+            trust_remote_code=trust_remote_code,
+            attn_implementation='eager',
+            **model_init_kwargs,
+        )
+
+    @classmethod
+    def from_quantized(
+        cls,
+        model_name_or_path: Optional[str],
+        device_map: Optional[Union[str, Dict[str, Union[str, int]]]] = None,
+        max_memory: Optional[dict] = None,
+        device: Optional[Union[str, int]] = None,
+        low_cpu_mem_usage: bool = False,
+        use_triton: bool = False,
+        inject_fused_attention: bool = False,
+        inject_fused_mlp: bool = False,
+        use_cuda_fp16: bool = True,
+        quantize_config: Optional[BaseQuantizeConfig] = None,
+        model_basename: Optional[str] = None,
+        use_safetensors: bool = True,
+        trust_remote_code: bool = False,
+        warmup_triton: bool = False,
+        trainable: bool = False,
+        disable_exllama: Optional[bool] = None,
+        disable_exllamav2: bool = False,
+        use_marlin: bool = False,
+        use_tritonv2: bool = False,
+        **kwargs,
+    ) -> BaseGPTQForVIT:
+        # If disable_exllamav2 is True, we want to fall back on the exllama kernel and not the cuda/cuda_old ones.
+        if disable_exllama is None:
+            if disable_exllamav2:
+                disable_exllama = False
+            else:
+                disable_exllama = True
+
+        model_type = "vit"
+        quant_func = GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_quantized
+        # A static list of kwargs needed for huggingface_hub
+        huggingface_kwargs = [
+            "cache_dir",
+            "force_download",
+            "proxies",
+            "resume_download",
+            "local_files_only",
+            "use_auth_token",
+            "revision",
+            "subfolder",
+            "_raise_exceptions_for_missing_entries",
+            "_commit_hash",
+        ]
+        # TODO: do we need this filtering of kwargs? @PanQiWei is there a reason we can't just pass all kwargs?
+        keywords = {
+            key: kwargs[key]
+            for key in list(signature(quant_func).parameters.keys()) + huggingface_kwargs
+            if key in kwargs
+        }
+        return quant_func(
+            model_name_or_path=model_name_or_path,
+            device_map=device_map,
+            max_memory=max_memory,
+            device=device,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            use_triton=use_triton,
+            inject_fused_attention=inject_fused_attention,
+            inject_fused_mlp=inject_fused_mlp,
+            use_cuda_fp16=use_cuda_fp16,
+            quantize_config=quantize_config,
+            model_basename=model_basename,
+            use_safetensors=use_safetensors,
+            trust_remote_code=trust_remote_code,
+            warmup_triton=warmup_triton,
+            trainable=trainable,
+            disable_exllama=disable_exllama,
+            disable_exllamav2=disable_exllamav2,
+            use_marlin=use_marlin,
+            use_tritonv2=use_tritonv2,
+            **keywords,
+        )
+
+__all__ = ["AutoGPTQForCausalLM","AutoGPTQForCausalMLM","AutoGPTQForVIT"]

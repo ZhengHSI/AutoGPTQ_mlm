@@ -669,7 +669,7 @@ def pack_from_tensors(
 
     i = 0
     row = 0
-    qweight = np.zeros((intweight.shape[0] // 32 * bits, intweight.shape[1]), dtype=np.uint32)
+    qweight = np.zeros(( (intweight.shape[0] * bits) // 32 , intweight.shape[1]), dtype=np.uint32)
     while row < qweight.shape[0]:
         for j in range(i, i + (32 // bits)):
             qweight[row] |= intweight[j] << (bits * (j - i))
@@ -684,9 +684,10 @@ def pack_from_tensors(
 
     unpacked_qzeros = unpacked_qzeros.numpy().astype(np.uint32)
     qzeros = np.zeros(
-        (unpacked_qzeros.shape[0], unpacked_qzeros.shape[1] // 32 * bits),
+        (unpacked_qzeros.shape[0], (unpacked_qzeros.shape[1] * bits) // 32),
         dtype=np.uint32,
     )
+    # print("----------qzeros", qzeros)
     i = 0
     col = 0
     while col < qzeros.shape[1]:

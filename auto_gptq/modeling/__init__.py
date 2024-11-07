@@ -1,5 +1,7 @@
 from ._base import BaseGPTQForCausalLM, BaseQuantizeConfig
-from .auto import GPTQ_CAUSAL_LM_MODEL_MAP, AutoGPTQForCausalLM
+from ._base_mlm import BaseGPTQForCausalMLM
+from ._base_vit import BaseGPTQForVIT
+from .auto import GPTQ_CAUSAL_LM_MODEL_MAP, AutoGPTQForCausalLM, AutoGPTQForCausalMLM, AutoGPTQForVIT
 from .baichuan import BaiChuanGPTQForCausalLM
 from .bloom import BloomGPTQForCausalLM
 from .codegen import CodeGenGPTQForCausalLM
@@ -28,3 +30,5 @@ from .starcoder2 import Starcoder2GPTQForCausalLM
 from .xverse import XverseGPTQForCausalLM
 from .yi import YiGPTQForCausalLM
 from .minicpm3 import MiniCPM3GPTQForCausalLM
+from .minicpmv_llama import MiniCPMVGPTQ_Llama3
+from .vit import VITGPTQ
