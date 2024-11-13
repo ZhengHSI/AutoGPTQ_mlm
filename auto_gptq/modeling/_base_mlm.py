@@ -935,7 +935,7 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
                         logger.info(f"The layer {name} is not quantized.")
                         del layers[name]
 
-                make_quant(
+                make_quant_different_bit(
                     model,
                     layers,
                     # 8,
