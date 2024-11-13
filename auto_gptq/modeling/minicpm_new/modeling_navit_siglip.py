@@ -46,30 +46,6 @@ from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
-static_quant = False
-max_int = 32767
-
-import json
-dynamic_range_dict_path_1 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_vit_quant.json'
-with open(dynamic_range_dict_path_1, 'r') as file:
-    dynamic_range_dict_1 = json.load(file)
-
-dynamic_range_dict_path_2 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_from_fp.json'
-with open(dynamic_range_dict_path_2, 'r') as file:
-    dynamic_range_dict_2 = json.load(file)
-
-def symmetric_fake_quant(tensor, scale):
-    # print(scale)
-    # min_scale = 1e-6  # 设置一个最小scale值
-    # scale = max(scale, min_scale)  # 确保scale不会小于最小值
-    # original_dtype = tensor.dtype
-    tensor_scaled = tensor / scale
-    tensor_rounded = torch.clamp(torch.round(tensor_scaled), -32768, 32767)
-    # tensor_rounded = torch.round(tensor_scaled)
-    # tensor_quantized = (tensor_rounded * scale).to(original_dtype)
-    tensor_quantized = tensor_rounded * scale
-    return tensor_quantized
-
 class SiglipVisionConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`SiglipVisionModel`]. It is used to instantiate a
@@ -157,7 +133,7 @@ class SiglipVisionConfig(PretrainedConfig):
             )
 
         return cls.from_dict(config_dict, **kwargs)
-
+        
 
 _CHECKPOINT_FOR_DOC = "google/siglip-base-patch16-224"
 
@@ -341,7 +317,6 @@ class SiglipVisionEmbeddings(nn.Module):
     def forward(self, pixel_values: torch.FloatTensor, patch_attention_mask: torch.BoolTensor, tgt_sizes: Optional[torch.IntTensor]=None) -> torch.Tensor:
         batch_size = pixel_values.size(0)
 
-        # patch_embeds = self.patch_embedding(pixel_values.cpu())
         patch_embeds = self.patch_embedding(pixel_values)
         embeddings = patch_embeds.flatten(2).transpose(1, 2)
 
@@ -383,7 +358,7 @@ class SiglipAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     # Copied from transformers.models.clip.modeling_clip.CLIPAttention.__init__
-    def __init__(self, config, layer_idx):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -396,7 +371,6 @@ class SiglipAttention(nn.Module):
             )
         self.scale = self.head_dim**-0.5
         self.dropout = config.attention_dropout
-        self.layer_idx = layer_idx
 
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
@@ -413,24 +387,14 @@ class SiglipAttention(nn.Module):
 
         batch_size, q_len, _ = hidden_states.size()
 
-        # 输入激活量化
-        if static_quant:
-            hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.q_proj.input']/max_int)
-
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # 输出激活量化
-        if static_quant:
-            query_states = symmetric_fake_quant(query_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.q_proj.output']/max_int)
-            key_states = symmetric_fake_quant(key_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.k_proj.output']/max_int)
-            value_states = symmetric_fake_quant(value_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.v_proj.output']/max_int)
-
         query_states = query_states.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            
+
         k_v_seq_len = key_states.shape[-2]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scale
 
@@ -461,16 +425,8 @@ class SiglipAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(batch_size, q_len, self.embed_dim)
 
-        # 输入激活量化
-        if static_quant:
-            attn_output = symmetric_fake_quant(attn_output, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.out_proj.input']/max_int)
-        
         attn_output = self.out_proj(attn_output)
 
-        # 输入激活量化
-        if static_quant:
-            attn_output = symmetric_fake_quant(attn_output, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.out_proj.output']/max_int)
-        
         return attn_output, attn_weights
 
 
@@ -663,49 +619,34 @@ class SiglipFlashAttention2(SiglipAttention):
 
 # Copied from transformers.models.clip.modeling_clip.CLIPMLP with CLIP->Siglip
 class SiglipMLP(nn.Module):
-    def __init__(self, config, layer_idx):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.activation_fn = ACT2FN[config.hidden_act]
         self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
         self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
-        self.layer_idx = layer_idx
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        #激活量化
-        if static_quant:
-            hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.mlp.fc1.input']/max_int)
         hidden_states = self.fc1(hidden_states)
-        if static_quant:
-            hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.mlp.fc1.output']/max_int)
-
         hidden_states = self.activation_fn(hidden_states)
-
-        #激活量化
-        if static_quant:
-            hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.mlp.fc2.input']/max_int)
         hidden_states = self.fc2(hidden_states)
-        if static_quant:
-            hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.mlp.fc2.output']/max_int)
-
         return hidden_states
 
 
 # Copied from transformers.models.clip.modeling_clip.CLIPEncoderLayer with CLIP->Siglip
 class SiglipEncoderLayer(nn.Module):
-    def __init__(self, config: SiglipVisionConfig, layer_idx: int):
+    def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.self_attn = (
-            SiglipAttention(config, layer_idx=layer_idx)
+            SiglipAttention(config)
             if not self._use_flash_attention_2
             else SiglipFlashAttention2(config)
         )
         self.layer_norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
-        self.mlp = SiglipMLP(config, layer_idx=layer_idx)
+        self.mlp = SiglipMLP(config)
         self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
-        self.layer_idx = layer_idx
 
     def forward(
         self,
@@ -732,17 +673,11 @@ class SiglipEncoderLayer(nn.Module):
             output_attentions=output_attentions,
         )
         hidden_states = residual + hidden_states
-        # if static_quant:
-        #     hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.self_attn.q_proj.output']/max_int)
-        
-        # Fully Connected
+
         residual = hidden_states
         hidden_states = self.layer_norm2(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-
-        # if static_quant:
-        #     hidden_states = symmetric_fake_quant(hidden_states, dynamic_range_dict_1[f'vpm.encoder.layers.{self.layer_idx}.mlp.fc1.output']/max_int)
 
         outputs = (hidden_states,)
 
@@ -835,7 +770,7 @@ class SiglipEncoder(nn.Module):
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        self.layers = nn.ModuleList([SiglipEncoderLayer(config, _) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     # Ignore copy

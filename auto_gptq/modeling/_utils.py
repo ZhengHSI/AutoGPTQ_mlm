@@ -66,6 +66,124 @@ def get_module_by_name_suffix(model, module_name: str):
             return module
 
 
+def make_quant_different_bit(
+    module,
+    names,
+    bits,
+    group_size,
+    name="",
+    use_triton: bool = False,
+    use_marlin: bool = False,
+    disable_exllama: Optional[bool] = None,
+    disable_exllamav2: bool = False,
+    use_qigen: bool = False,
+    use_cuda_fp16: bool = True,
+    desc_act: bool = False,
+    trainable: bool = False,
+    use_tritonv2: bool = False,
+):
+    # If disable_exllamav2 is True, we want to fall back on the exllama kernel and not the cuda/cuda_old ones.
+    if disable_exllama is None:
+        if disable_exllamav2:
+            disable_exllama = False
+        else:
+            disable_exllama = True
+
+    QuantLinear_4 = dynamically_import_QuantLinear(
+        use_triton=use_triton,
+        desc_act=desc_act,
+        group_size=group_size,
+        bits=4,
+        use_marlin=use_marlin,
+        disable_exllama=disable_exllama,
+        disable_exllamav2=disable_exllamav2,
+        use_qigen=use_qigen,
+        use_tritonv2=use_tritonv2,
+    )
+
+    QuantLinear_8 = dynamically_import_QuantLinear(
+        use_triton=use_triton,
+        desc_act=desc_act,
+        group_size=group_size,
+        bits=8,
+        use_marlin=use_marlin,
+        disable_exllama=disable_exllama,
+        disable_exllamav2=disable_exllamav2,
+        use_qigen=use_qigen,
+        use_tritonv2=use_tritonv2,
+    )
+
+    if isinstance(module, QuantLinear_4) or isinstance(module, QuantLinear_8):
+        return
+
+    for name, submodule in module.named_modules():
+        if name in names:
+            ori_layer_device = next(submodule.parameters()).device
+
+            if isinstance(submodule, nn.Linear):
+                in_features = submodule.in_features
+                out_features = submodule.out_features
+            elif isinstance(submodule, nn.Conv2d):
+                in_features = submodule.in_channels
+                out_features = submodule.out_channels
+            elif isinstance(submodule, transformers.pytorch_utils.Conv1D):
+                in_features = submodule.weight.shape[0]
+                out_features = submodule.weight.shape[1]
+            bias = submodule.bias is not None
+            if (
+                (not (desc_act) or group_size == -1)
+                and not use_triton
+                and not use_qigen
+                and not use_tritonv2
+            ):
+                if "llm" in name:
+                    new_layer = QuantLinear_4(
+                        4,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        use_cuda_fp16=use_cuda_fp16,
+                        trainable=trainable,
+                        weight_dtype=submodule.weight.dtype,
+                    )
+                else:
+                    new_layer = QuantLinear_8(
+                        8,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        use_cuda_fp16=use_cuda_fp16,
+                        trainable=trainable,
+                        weight_dtype=submodule.weight.dtype,
+                    ) 
+            else:
+                if "llm" in name:
+                    new_layer = QuantLinear_4(
+                        4,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        trainable=trainable,
+                        weight_dtype=submodule.weight.dtype,
+                    )
+                else:
+                    new_layer = QuantLinear_8(
+                        8,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        trainable=trainable,
+                        weight_dtype=submodule.weight.dtype,
+                    )
+
+            new_layer.device = ori_layer_device
+            recurse_setattr(module, name, new_layer.to(ori_layer_device))
+
+#
 def make_quant(
     module,
     names,

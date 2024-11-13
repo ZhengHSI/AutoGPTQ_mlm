@@ -203,91 +203,93 @@ class QuantLinear(nn.Module):
         x_dtype = x.dtype
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
-        if (
-            x.device.type == "cuda"
-            and self.autogptq_cuda_available is True
-            and (self.kernel_switch_threshold is False or x.shape[0] < self.kernel_switch_threshold)
-        ):
-            out = torch.zeros(x.shape[0], out_shape[-1], dtype=torch.float, device=x.device)
-            if self.use_cuda_fp16:
-                if x_dtype != torch.float16:
-                    logger.warning_once(
-                        f"The cuda-old kernel for GPTQ with use_cuda_fp16=True requires a float16 input activation, while {x_dtype} was passed. Casting to float16.\nMake sure you loaded your model with torch_dtype=torch.float16, that the model definition does not inadvertently cast to float32, or disable AMP Autocast that may produce float32 intermediate activations in the model."
-                    )
+        # if (
+        #     x.device.type == "cuda"
+        #     and self.autogptq_cuda_available is True
+        #     and (self.kernel_switch_threshold is False or x.shape[0] < self.kernel_switch_threshold)
+        # ):
+        #     out = torch.zeros(x.shape[0], out_shape[-1], dtype=torch.float, device=x.device)
+        #     if self.use_cuda_fp16:
+        #         if x_dtype != torch.float16:
+        #             logger.warning_once(
+        #                 f"The cuda-old kernel for GPTQ with use_cuda_fp16=True requires a float16 input activation, while {x_dtype} was passed. Casting to float16.\nMake sure you loaded your model with torch_dtype=torch.float16, that the model definition does not inadvertently cast to float32, or disable AMP Autocast that may produce float32 intermediate activations in the model."
+        #             )
 
-                if self.bits == 2:
-                    self.autogptq_cuda.vecquant2matmul_faster_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                        self.half_indim,
-                    )
-                elif self.bits == 3:
-                    self.autogptq_cuda.vecquant3matmul_faster_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                        self.half_indim,
-                    )
-                elif self.bits == 4:
-                    self.autogptq_cuda.vecquant4matmul_faster_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                        self.half_indim,
-                    )
+        #         if self.bits == 2:
+        #             self.autogptq_cuda.vecquant2matmul_faster_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #                 self.half_indim,
+        #             )
+        #         elif self.bits == 3:
+        #             self.autogptq_cuda.vecquant3matmul_faster_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #                 self.half_indim,
+        #             )
+        #         elif self.bits == 4:
+        #             self.autogptq_cuda.vecquant4matmul_faster_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #                 self.half_indim,
+        #             )
 
-                else:
-                    raise NotImplementedError("Only 2,3,4 bits are supported.")
-            else:
-                x = x.to(torch.float32)  # This is required for autocast compatibility.
-                if self.bits == 2:
-                    self.autogptq_cuda.vecquant2matmul_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                    )
-                elif self.bits == 3:
-                    self.autogptq_cuda.vecquant3matmul_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                    )
-                elif self.bits == 4:
-                    self.autogptq_cuda.vecquant4matmul_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                    )
-                elif self.bits == 8:
-                    self.autogptq_cuda.vecquant8matmul_old(
-                        x,
-                        self.qweight,
-                        out,
-                        self.scales.float(),
-                        self.qzeros,
-                        self.group_size,
-                    )
-                else:
-                    raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+        #         else:
+        #             raise NotImplementedError("Only 2,3,4 bits are supported.")
+        #     else:
+        #         x = x.to(torch.float32)  # This is required for autocast compatibility.
+        #         if self.bits == 2:
+        #             self.autogptq_cuda.vecquant2matmul_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #             )
+        #         elif self.bits == 3:
+        #             self.autogptq_cuda.vecquant3matmul_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #             )
+        #         elif self.bits == 4:
+        #             self.autogptq_cuda.vecquant4matmul_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #             )
+        #         elif self.bits == 8:
+        #             self.autogptq_cuda.vecquant8matmul_old(
+        #                 x,
+        #                 self.qweight,
+        #                 out,
+        #                 self.scales.float(),
+        #                 self.qzeros,
+        #                 self.group_size,
+        #             )
+        #         else:
+        #             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+        if False:
+            print(1)
         else:
             if self.wf.device != self.qzeros.device:
                 self.wf = self.wf.to(self.qzeros.device)

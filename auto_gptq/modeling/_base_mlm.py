@@ -635,7 +635,11 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
             "_commit_hash": commit_hash,
         }
 
-        config = AutoConfig.from_pretrained(
+        # config = AutoConfig.from_pretrained(
+        #     pretrained_model_name_or_path, trust_remote_code=True, **cached_file_kwargs
+        # )
+        from .minicpm.configuration_minicpm import MiniCPMConfig
+        config = MiniCPMConfig.from_pretrained(
             pretrained_model_name_or_path, trust_remote_code=True, **cached_file_kwargs
         )
         if config.model_type not in SUPPORTED_MODELS:
@@ -674,7 +678,10 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
         torch.cuda.empty_cache()
 
         merged_kwargs = {**model_init_kwargs, **cached_file_kwargs}
-        model = AutoModel.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+        # model = AutoModel.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+        from .minicpm.modeling_minicpmv import MiniCPMV
+        # model = AutoModel.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+        model = MiniCPMV.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
 
         model_config = model.config.to_dict()
         seq_len_keys = ["max_position_embeddings", "seq_length", "n_positions"]
@@ -802,10 +809,17 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
             disable_exllama = True
 
         # == step1: prepare configs and file names == #
-        config = AutoConfig.from_pretrained(
-            model_name_or_path,
-            trust_remote_code=trust_remote_code,
-            **cached_file_kwargs,
+        # config = AutoConfig.from_pretrained(
+        #     model_name_or_path,
+        #     trust_remote_code=True,
+        #     **cached_file_kwargs,
+        # )
+        from .minicpm_new.configuration_minicpm import MiniCPMConfig
+        config = MiniCPMConfig.from_pretrained(
+            model_name_or_path, 
+            trust_remote_code=True, 
+            use_safetensors=True,
+            **cached_file_kwargs
         )
 
         if config.model_type not in SUPPORTED_MODELS:
@@ -898,12 +912,20 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
                 init_contexts.append(accelerate.init_empty_weights(include_buffers=False))
 
             with ContextManagers(init_contexts):
-                model = AutoModel.from_config(
-                    config, trust_remote_code=trust_remote_code, torch_dtype=torch_dtype
-                )
+                # model = AutoModel.from_config(
+                #     config, trust_remote_code=trust_remote_code, torch_dtype=torch_dtype
+                # )
+                from .minicpm_new.modeling_minicpmv import MiniCPMV
+                # model = AutoModel.from_pretrained(model_name_or_path, 
+                #                                 trust_remote_code=True,
+                #                                 use_safetensors=True,          # 明确表示使用 safetensors
+                #                                 )
+                model = MiniCPMV.from_pretrained(model_name_or_path, trust_remote_code=True)
 
-                layers = find_layers(model)
+                #加载llm量化权重
+                layers = find_layers(model,)
                 ignore_layers = [cls.lm_head_name] + cls.outside_layer_modules
+                # ignore_layers.append("vpm.encoder")
                 for name in list(layers.keys()):
                     if any(name.startswith(ignore_layer) for ignore_layer in ignore_layers) or all(
                         not name.endswith(ignore_layer)
@@ -916,6 +938,7 @@ class BaseGPTQForCausalMLM(nn.Module, PushToHubMixin):
                 make_quant(
                     model,
                     layers,
+                    # 8,
                     quantize_config.bits,
                     quantize_config.group_size,
                     use_triton=use_triton,

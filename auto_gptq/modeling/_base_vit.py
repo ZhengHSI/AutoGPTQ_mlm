@@ -226,7 +226,7 @@ class BaseGPTQForVIT(nn.Module, PushToHubMixin):
         
         # 获得模型的输入
         # def store_input_hook(_, args, kwargs):
-        def store_input_hook(_, args,kwargs):
+        def store_input_hook(_, args, kwargs):
             # Positional arguments.
             layer_input = []
             for inp in args:

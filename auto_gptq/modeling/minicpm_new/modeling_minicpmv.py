@@ -14,18 +14,7 @@ from .modeling_minicpm import MiniCPMPreTrainedModel, MiniCPMForCausalLM
 from .modeling_navit_siglip import SiglipVisionTransformer
 from .resampler import Resampler
 
-embed_quant = True
-def symmetric_fake_quant(tensor, scale):
-    # print(scale)
-    # min_scale = 1e-6  # 设置一个最小scale值
-    # scale = max(scale, min_scale)  # 确保scale不会小于最小值
-    # original_dtype = tensor.dtype
-    tensor_scaled = tensor / scale
-    tensor_rounded = torch.clamp(torch.round(tensor_scaled), -32768, 32767)
-    # tensor_rounded = torch.round(tensor_scaled)
-    # tensor_quantized = (tensor_rounded * scale).to(original_dtype)
-    tensor_quantized = tensor_rounded * scale
-    return tensor_quantized
+
 
 class MiniCPMVPreTrainedModel(MiniCPMPreTrainedModel):
     config_class = MiniCPMVConfig
@@ -45,11 +34,11 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
     def init_vision_module(self):
         # same as HuggingFaceM4/siglip-so400m-14-980-flash-attn2-navit add tgt_sizes
-        # if self.config._attn_implementation == 'flash_attention_2':
-        #     self.config.vision_config._attn_implementation = 'flash_attention_2'
-        # else:
-        #     # not suport sdpa
-        self.config.vision_config._attn_implementation = 'eager'
+        if self.config._attn_implementation == 'flash_attention_2':
+            self.config.vision_config._attn_implementation = 'flash_attention_2'
+        else:
+            # not suport sdpa
+            self.config.vision_config._attn_implementation = 'eager'
         model = SiglipVisionTransformer(self.config.vision_config)
         if self.config.drop_vision_last_layer:
             model.encoder.layers = model.encoder.layers[:-1]
@@ -86,6 +75,99 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
     def get_decoder(self):
         return self.llm
 
+    # def get_vllm_embedding(self, data):
+    #     if 'vision_hidden_states' not in data:
+    #         dtype = self.llm.model.embed_tokens.weight.dtype
+    #         device = self.llm.model.embed_tokens.weight.device
+    #         tgt_sizes = data['tgt_sizes']
+    #         pixel_values_list = data['pixel_values']
+    #         vision_hidden_states = []
+    #         all_pixel_values = []
+    #         img_cnt = []
+    #         for pixel_values in pixel_values_list:
+    #             img_cnt.append(len(pixel_values))
+    #             all_pixel_values.extend([i.flatten(end_dim=1).permute(1, 0) for i in pixel_values])
+
+    #         # exist image
+    #         if all_pixel_values:
+    #             tgt_sizes = [tgt_size for tgt_size in tgt_sizes if isinstance(tgt_size, torch.Tensor)]
+    #             tgt_sizes = torch.vstack(tgt_sizes).type(torch.int32)
+
+    #             max_patches = torch.max(tgt_sizes[:, 0] * tgt_sizes[:, 1])
+
+    #             all_pixel_values = torch.nn.utils.rnn.pad_sequence(all_pixel_values, batch_first=True,
+    #                                                                padding_value=0.0)
+    #             B, L, _ = all_pixel_values.shape
+    #             all_pixel_values = all_pixel_values.permute(0, 2, 1).reshape(B, 3, -1, L)
+
+    #             patch_attn_mask = torch.zeros((B, 1, max_patches), dtype=torch.bool, device=device)
+    #             for i in range(B):
+    #                 patch_attn_mask[i, 0, :tgt_sizes[i][0] * tgt_sizes[i][1]] = True
+
+    #             vision_batch_size = self.config.vision_batch_size
+    #             all_pixel_values = all_pixel_values.type(dtype)
+    #             if B > vision_batch_size:
+    #                 hs = []
+    #                 for i in range(0, B, vision_batch_size):
+    #                     start_idx = i
+    #                     end_idx = i + vision_batch_size
+    #                     tmp_hs = self.vpm(all_pixel_values[start_idx:end_idx], patch_attention_mask=patch_attn_mask[start_idx:end_idx], tgt_sizes=tgt_sizes[start_idx:end_idx]).last_hidden_state
+    #                     hs.append(tmp_hs)
+    #                 vision_embedding = torch.cat(hs, dim=0)
+    #             else:
+    #                 vision_embedding = self.vpm(all_pixel_values, patch_attention_mask=patch_attn_mask, tgt_sizes=tgt_sizes).last_hidden_state
+    #             vision_embedding = self.resampler(vision_embedding, tgt_sizes)
+
+    #             start = 0
+    #             for pixel_values in pixel_values_list:
+    #                 img_cnt = len(pixel_values)
+    #                 if img_cnt > 0:
+    #                     vision_hidden_states.append(vision_embedding[start: start + img_cnt])
+    #                     start += img_cnt
+    #                 else:
+    #                     vision_hidden_states.append([])
+    #         else: # no image
+    #             if self.training:
+    #                 dummy_image = torch.zeros(
+    #                     (1, 3, 224, 224),
+    #                     device=device, dtype=dtype
+    #                 )
+    #                 tgt_sizes = torch.Tensor([[(224 // self.config.patch_size), math.ceil(224 / self.config.patch_size)]]).type(torch.int32)
+    #                 dummy_feature = self.resampler(self.vpm(dummy_image).last_hidden_state, tgt_sizes)
+    #             else:
+    #                 dummy_feature = []
+    #             for _ in range(len(pixel_values_list)):
+    #                 vision_hidden_states.append(dummy_feature)
+
+    #     else:
+    #         vision_hidden_states = data['vision_hidden_states']
+
+    #     if hasattr(self.llm.config, 'scale_emb'):
+    #         vllm_embedding = self.llm.model.embed_tokens(data['input_ids']) * self.llm.config.scale_emb
+    #     else:
+    #         vllm_embedding = self.llm.model.embed_tokens(data['input_ids'])
+
+    #     vision_hidden_states = [i.type(vllm_embedding.dtype) if isinstance(
+    #         i, torch.Tensor) else i for i in vision_hidden_states]
+
+    #     bs = len(data['input_ids'])
+    #     for i in range(bs):
+    #         cur_vs_hs = vision_hidden_states[i]
+    #         if len(cur_vs_hs) > 0:
+    #             cur_vllm_emb = vllm_embedding[i]
+    #             cur_image_bound = data['image_bound'][i]
+    #             if len(cur_image_bound) > 0:
+    #                 image_indices = torch.stack(
+    #                     [torch.arange(r[0], r[1], dtype=torch.long) for r in cur_image_bound]
+    #                 ).to(vllm_embedding.device)
+
+    #                 cur_vllm_emb.scatter_(0, image_indices.view(-1, 1).repeat(1, cur_vllm_emb.shape[-1]),
+    #                                       cur_vs_hs.view(-1, cur_vs_hs.shape[-1]))
+    #             elif self.training:
+    #                 cur_vllm_emb += cur_vs_hs[0].mean() * 0
+
+    #     return vllm_embedding, vision_hidden_states
+
     def get_vllm_embedding(self, data):
         if torch.is_tensor(data):
             data = {'input_ids':data}
@@ -93,7 +175,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                 vllm_embedding = self.llm.model.embed_tokens(data['input_ids']) * self.llm.config.scale_emb
             else:
                 vllm_embedding = self.llm.model.embed_tokens(data['input_ids'])
-                
+
             return vllm_embedding, None
         else:
             if 'vision_hidden_states' not in data:
@@ -113,30 +195,31 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                     tgt_sizes = [tgt_size for tgt_size in tgt_sizes if isinstance(tgt_size, torch.Tensor)]
                     tgt_sizes = torch.vstack(tgt_sizes).type(torch.int32)
 
-                    max_patches = torch.max(tgt_sizes[:, 0] * tgt_sizes[:, 1])
+                    if self.config.batch_vision_input:
+                        max_patches = torch.max(tgt_sizes[:, 0] * tgt_sizes[:, 1])
 
-                    all_pixel_values = torch.nn.utils.rnn.pad_sequence(all_pixel_values, batch_first=True,
-                                                                    padding_value=0.0)
-                    B, L, _ = all_pixel_values.shape
-                    all_pixel_values = all_pixel_values.permute(0, 2, 1).reshape(B, 3, -1, L)
+                        all_pixel_values = torch.nn.utils.rnn.pad_sequence(all_pixel_values, batch_first=True,
+                                                                        padding_value=0.0)
+                        B, L, _ = all_pixel_values.shape
+                        all_pixel_values = all_pixel_values.permute(0, 2, 1).reshape(B, 3, -1, L)
 
-                    patch_attn_mask = torch.zeros((B, 1, max_patches), dtype=torch.bool, device=device)
-                    for i in range(B):
-                        patch_attn_mask[i, 0, :tgt_sizes[i][0] * tgt_sizes[i][1]] = True
+                        patch_attn_mask = torch.zeros((B, 1, max_patches), dtype=torch.bool, device=device)
+                        for i in range(B):
+                            patch_attn_mask[i, 0, :tgt_sizes[i][0] * tgt_sizes[i][1]] = True
 
-                    vision_batch_size = self.config.vision_batch_size
-                    all_pixel_values = all_pixel_values.type(dtype)
-                    if B > vision_batch_size:
-                        hs = []
-                        for i in range(0, B, vision_batch_size):
-                            start_idx = i
-                            end_idx = i + vision_batch_size
-                            tmp_hs = self.vpm(all_pixel_values[start_idx:end_idx], patch_attention_mask=patch_attn_mask[start_idx:end_idx], tgt_sizes=tgt_sizes[start_idx:end_idx]).last_hidden_state
-                            hs.append(tmp_hs)
-                        vision_embedding = torch.cat(hs, dim=0)
+                        vision_embedding = self.vpm(all_pixel_values.type(dtype), patch_attention_mask=patch_attn_mask, tgt_sizes=tgt_sizes).last_hidden_state
+                        vision_embedding = self.resampler(vision_embedding, tgt_sizes)
                     else:
-                        vision_embedding = self.vpm(all_pixel_values, patch_attention_mask=patch_attn_mask, tgt_sizes=tgt_sizes).last_hidden_state
-                    vision_embedding = self.resampler(vision_embedding, tgt_sizes)
+                        # get vision_embedding foreach
+                        vision_embedding = []
+                        for single_tgt_size, single_pixel_values in zip(tgt_sizes, all_pixel_values):
+                            single_pixel_values = single_pixel_values.unsqueeze(0)
+                            B, L, _ = single_pixel_values.shape
+                            single_pixel_values = single_pixel_values.permute(0, 2, 1).reshape(B, 3, -1, L)
+                            single_vision_embedding = self.vpm(single_pixel_values.type(dtype), tgt_sizes=single_tgt_size.unsqueeze(0)).last_hidden_state
+                            single_vision_embedding = self.resampler(single_vision_embedding, single_tgt_size.unsqueeze(0))
+                            vision_embedding.append(single_vision_embedding)
+                        vision_embedding = torch.vstack(vision_embedding)
 
                     start = 0
                     for pixel_values in pixel_values_list:
@@ -155,7 +238,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                         tgt_sizes = torch.Tensor([[(224 // self.config.patch_size), math.ceil(224 / self.config.patch_size)]]).type(torch.int32)
                         dummy_feature = self.resampler(self.vpm(dummy_image).last_hidden_state, tgt_sizes)
                     else:
-                        dummy_feature = []
+                        dummy_feature = [] 
                     for _ in range(len(pixel_values_list)):
                         vision_hidden_states.append(dummy_feature)
             else:
@@ -185,13 +268,23 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                     elif self.training:
                         cur_vllm_emb += cur_vs_hs[0].mean() * 0
 
-        scale_value = torch.max(torch.abs(vllm_embedding)) 
-        print("----------------------scale_value:",scale_value)
         return vllm_embedding, vision_hidden_states
+    
+    # def forward(self, data, **kwargs):
+    #     vllm_embedding, vision_hidden_states = self.get_vllm_embedding(data)
+    #     position_ids = data["position_ids"]
+    #     if position_ids.dtype != torch.int64:
+    #         position_ids = position_ids.long()
 
+    #     return self.llm(
+    #         input_ids=None,
+    #         position_ids=position_ids,
+    #         inputs_embeds=vllm_embedding,
+    #         **kwargs
+    #     )
+    
     def forward(self, data, **kwargs):
         vllm_embedding, vision_hidden_states = self.get_vllm_embedding(data)
-
         if torch.is_tensor(data):
             position_ids = None
         else:
@@ -235,7 +328,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
         thread = Thread(target=self.llm.generate, kwargs=generation_kwargs)
         thread.start()
-
+    
         return streamer
 
     def _decode_text(self, result_ids, tokenizer):
@@ -291,7 +384,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
         if return_vision_hidden_states:
             return result, vision_hidden_states
-
+        
         return result
 
     def chat(
@@ -317,7 +410,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             batched = False
         msgs_list = msgs
         images_list = image
-
+        
         if batched is False:
             images_list, msgs_list = [images_list], [msgs_list]
         else:
@@ -329,7 +422,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             if self.processor is None:
                 self.processor = AutoProcessor.from_pretrained(self.config._name_or_path, trust_remote_code=True)
             processor = self.processor
-
+        
         assert self.config.query_num == processor.image_processor.image_feature_size, "These two values should be the same. Check `config.json` and `preprocessor_config.json`."
         assert self.config.patch_size == processor.image_processor.patch_size, "These two values should be the same. Check `config.json` and `preprocessor_config.json`."
         assert self.config.use_image_id == processor.image_processor.use_image_id, "These two values should be the same. Check `config.json` and `preprocessor_config.json`."
@@ -369,17 +462,17 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
             if system_prompt:
                 sys_msg = {'role': 'system', 'content': system_prompt}
-                copy_msgs = [sys_msg] + copy_msgs
+                copy_msgs = [sys_msg] + copy_msgs        
 
             prompts_lists.append(processor.tokenizer.apply_chat_template(copy_msgs, tokenize=False, add_generation_prompt=True))
             input_images_lists.append(images)
 
         inputs = processor(
-            prompts_lists,
-            input_images_lists,
+            prompts_lists, 
+            input_images_lists, 
             max_slice_nums=max_slice_nums,
             use_image_id=use_image_id,
-            return_tensors="pt",
+            return_tensors="pt", 
             max_length=max_inp_length
         ).to(self.device)
 
@@ -396,7 +489,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                 "num_beams": 3,
                 "repetition_penalty": 1.2,
             }
-
+            
         if min_new_tokens > 0:
             generation_config['min_new_tokens'] = min_new_tokens
 
@@ -415,7 +508,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                 decode_text=True,
                 **generation_config
             )
-
+        
         if stream:
             def stream_gen():
                 for text in res:

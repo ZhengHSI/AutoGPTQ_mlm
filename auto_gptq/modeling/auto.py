@@ -192,7 +192,7 @@ class AutoGPTQForCausalMLM:
         **model_init_kwargs,
     ) -> BaseGPTQForCausalMLM:
         #获得模型的类型
-        model_type = check_and_get_model_type(pretrained_model_name_or_path, True)
+        model_type = "minicpmv"
         return GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_pretrained(
             pretrained_model_name_or_path=pretrained_model_name_or_path,
             quantize_config=quantize_config,
@@ -232,7 +232,8 @@ class AutoGPTQForCausalMLM:
             else:
                 disable_exllama = True
 
-        model_type = check_and_get_model_type(model_name_or_path, trust_remote_code)
+        # model_type = check_and_get_model_type(model_name_or_path, trust_remote_code)
+        model_type = "minicpmv"
         quant_func = GPTQ_CAUSAL_LM_MODEL_MAP[model_type].from_quantized
         # A static list of kwargs needed for huggingface_hub
         huggingface_kwargs = [
