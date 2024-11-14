@@ -51,7 +51,6 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 from .configuration_minicpm import MiniCPMConfig
 import re
-import json
 
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -67,95 +66,17 @@ if is_torch_fx_available():
 
     _prepare_4d_causal_attention_mask = torch.fx.wrap(_prepare_4d_causal_attention_mask)
 
-# import aimet_torch.elementwise_ops as op
-
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "MiniCPMConfig"
-# save_activation_dynamic_range = True
-# save_min_max = True
-# # use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
-# use_qualcomm = True
-# static_quant = False
-
-save_activation_dynamic_range = False
-save_min_max = False
+save_activation_dynamic_range = True
+save_min_max = True
 # use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
 use_qualcomm = True
 static_quant = True
-
 max_int = 32767
 dynamic_range_dict = {}
 symmetric=False
-
-dynamic_range_dict_path = '/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/modeling/minicpm_new/max_min_values.json'
-
-with open(dynamic_range_dict_path, 'r') as file:
-    dynamic_range_dict_load = json.load(file)
-
-# def asymmetric_fake_quant(tensor, min_max_list):
-#     min_val = torch.tensor(min_max_list[0], dtype=torch.float32, device=tensor.device)
-#     max_val = torch.tensor(min_max_list[1], dtype=torch.float32, device=tensor.device)
-#     max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
-    
-#     # 计算s和z
-#     s = (max_val - min_val) / (2 * max_int_t + 1)
-#     # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
-#     z = max_int_t - torch.round(max_val / s)
-#     # 执行量化和反量化操作
-#     tensor_quantized = torch.clamp(torch.round(tensor / s + z), -max_int - 1, max_int)
-#     tensor_dequantized = (tensor_quantized - z) * s
-#     # 计算均方误差
-#     mse = torch.mean((tensor - tensor_dequantized) ** 2)
-
-#     threshold=20
-#     if mse > threshold:
-#         print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}")
-#         print("tensor: ", tensor)
-#         print("tensor_dequantized: ", tensor_dequantized)
-#         exit(0)
-#     if torch.isnan(mse).any():
-#         print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-#         exit(0)
-#     return tensor_dequantized
-
-def asymmetric_fake_quant(tensor, min_max_list, name=None):
-    # max_abs_value = max(abs(x) for x in min_max_list)
-    # min_1 = - max_abs_value
-    # max_1 = max_abs_value
-    fix_ratio = 1.0
-    if min_max_list[0]<0:
-        min_1=min_max_list[0]*fix_ratio
-    else:
-        min_1=min_max_list[0]
-    if min_max_list[1]>0:
-        max_1=min_max_list[1]*fix_ratio
-    else:
-        max_1=min_max_list[1]
-    min_val = torch.tensor(min_1, dtype=torch.float32, device=tensor.device)
-    max_val = torch.tensor(max_1, dtype=torch.float32, device=tensor.device)
-    max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
-    
-    # 计算s和z
-    s = (max_val - min_val) / (2 * max_int_t + 1)
-    # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
-    z = max_int_t - torch.round(max_val / s).clamp_(-max_int-1, max_int)
-    # 执行量化和反量化操作
-    tensor_quantized = torch.clamp(torch.round(tensor / s + z), -max_int - 1, max_int)
-    tensor_dequantized = (tensor_quantized - z) * s
-    # 计算均方误差
-    # mse = torch.mean((tensor - tensor_dequantized) ** 2)
-
-    # threshold=10
-    # if mse > threshold:
-    #     print(name, f" High MSE: {mse.item()}, min_max_list: {min_max_list}")
-    #     # print("tensor: ", tensor)
-    #     # print("tensor_dequantized: ", tensor_dequantized)
-    #     # exit(0)
-    # if torch.isnan(mse).any():
-    #     print(name, f" Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-    #     exit(0)
-    return tensor_dequantized
 
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
@@ -361,253 +282,11 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
     orig_dtype = k.dtype
     cos = cos[position_ids].unsqueeze(unsqueeze_dim)  # [bs, 1, seq_len, dim]
     sin = sin[position_ids].unsqueeze(unsqueeze_dim)  # [bs, 1, seq_len, dim]
-    # print("pos: ",position_ids.shape)
-    # print("cos: ",cos.shape) # 这里不太对
-    # print("sin: ",sin.shape)
     q_fp32 = q.to(dtype=torch.float32, device=q.device)
     k_fp32 = k.to(dtype=torch.float32, device=k.device)
     q_embed = (q_fp32 * cos) + (rotate_half(q_fp32) * sin)
     k_embed = (k_fp32 * cos) + (rotate_half(k_fp32) * sin)
     return q_embed.to(dtype=orig_dtype), k_embed.to(dtype=orig_dtype)
-
-
-def apply_rotary_pos_emb_qualcomm(q, k, cos, sin, position_ids, layer_idx=None, unsqueeze_dim=1):
-    '''
-    Based on FacebookResearch's llama, provided by Carl
-    '''
-    # rope_real = rope_vals[0] # shape should be 1, 1, seqlen, head_dim/2
-    # rope_im = rope_vals[1] # shape should be 1, 1, seqlen, head_dim/2
-    orig_dtype = k.dtype
-    rope_real = cos[position_ids].unsqueeze(unsqueeze_dim)[..., : cos[position_ids].shape[-1] // 2] # shape有问题
-    rope_im = sin[position_ids].unsqueeze(unsqueeze_dim)[..., : sin[position_ids].shape[-1] // 2]
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = rope_real.min().item(), rope_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_real'] = [vmin, vmax]
-            vmin, vmax = rope_im.min().item(), rope_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_im'] = [vmin, vmax]
-        else:
-            vmax = rope_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_real'] = vmax
-            vmax = rope_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_im'] = vmax
-    
-    if static_quant:
-        if not symmetric:
-            rope_real = asymmetric_fake_quant(rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.rope_real'], f'model.layers.{layer_idx}.self_attn.rope_real')
-            rope_im = asymmetric_fake_quant(rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.rope_im'],f'model.layers.{layer_idx}.self_attn.rope_im')
-        # TODO: if symmetric:
-
-
-    # TODO: Why HF uses different coordinates from the paper
-    # x_real = x[:,:,:,:x.shape[-1]//2] # extract first half elements
-    # x_im = x[:,:,:,x.shape[-1]//2:] # extract second half elements
-    q_real = q[..., : q.shape[-1] // 2]
-    q_im = q[..., q.shape[-1] // 2 :]
-    k_real = k[..., : k.shape[-1] // 2]
-    k_im = k[..., k.shape[-1] // 2 :]
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = q_real.min().item(), q_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real'] = [vmin, vmax]
-            vmin, vmax = q_im.min().item(), q_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im'] = [vmin, vmax]
-            vmin, vmax = k_real.min().item(), k_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real'] = [vmin, vmax]
-            vmin, vmax = k_im.min().item(), k_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im'] = [vmin, vmax]
-        else:
-            vmax = q_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real'] = vmax
-            vmax = q_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im'] = vmax
-            vmax = k_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real'] = vmax
-            vmax = k_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im'] = vmax
-
-    if static_quant:
-        if not symmetric:
-            q_real = asymmetric_fake_quant(q_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_real'],f'model.layers.{layer_idx}.self_attn.q_real')
-            q_im = asymmetric_fake_quant(q_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_im'],f'model.layers.{layer_idx}.self_attn.q_im')
-            k_real = asymmetric_fake_quant(k_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_real'],f'model.layers.{layer_idx}.self_attn.k_real')
-            k_im = asymmetric_fake_quant(k_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_im'], f'model.layers.{layer_idx}.self_attn.k_im')
-
-    # x_prod_real = x_real*rope_real - x_im * rope_im
-    # x_prod_im = x_real*rope_im + x_im*rope_real
-    if static_quant: # no static_quant
-        if not symmetric:
-            q_real_mul_rope_real = asymmetric_fake_quant(q_real*rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_real*rope_real'],f'model.layers.{layer_idx}.self_attn.q_real*rope_real')
-            q_im_mul_rope_im = asymmetric_fake_quant(q_im*rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_im*rope_im'],f'model.layers.{layer_idx}.self_attn.q_im*rope_im')
-            q_real_mul_rope_im = asymmetric_fake_quant(q_real*rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_real*rope_im'],f'model.layers.{layer_idx}.self_attn.q_real*rope_im')
-            q_im_mul_rope_real = asymmetric_fake_quant(q_im*rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_im*rope_real'],f'model.layers.{layer_idx}.self_attn.q_im*rope_real')
-            k_real_mul_rope_real = asymmetric_fake_quant(k_real*rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_real*rope_real'],f'model.layers.{layer_idx}.self_attn.k_real*rope_real')
-            k_im_mul_rope_im = asymmetric_fake_quant(k_im*rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_im*rope_im'],f'model.layers.{layer_idx}.self_attn.k_im*rope_im')
-            k_real_mul_rope_im = asymmetric_fake_quant(k_real*rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_real*rope_im'],f'model.layers.{layer_idx}.self_attn.k_real*rope_im')
-            k_im_mul_rope_real = asymmetric_fake_quant(k_im*rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_im*rope_real'],f'model.layers.{layer_idx}.self_attn.k_im*rope_real')
-            q_prod_real = q_real_mul_rope_real - q_im_mul_rope_im 
-            q_prod_im = q_real_mul_rope_im + q_im_mul_rope_real
-            k_prod_real = k_real_mul_rope_real - k_im_mul_rope_im
-            k_prod_im = k_real_mul_rope_im + k_im_mul_rope_real
-            q_prod_real = asymmetric_fake_quant(q_prod_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_prod_real'],f'model.layers.{layer_idx}.self_attn.q_prod_real')
-            q_prod_im = asymmetric_fake_quant(q_prod_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.q_prod_im'],f'model.layers.{layer_idx}.self_attn.q_prod_im')
-            k_prod_real = asymmetric_fake_quant(k_prod_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_prod_real'],f'model.layers.{layer_idx}.self_attn.k_prod_real')
-            k_prod_im = asymmetric_fake_quant(k_prod_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.k_prod_im'],f'model.layers.{layer_idx}.self_attn.k_prod_im')
-    else:
-        q_prod_real = q_real*rope_real - q_im * rope_im
-        q_prod_im = q_real*rope_im + q_im*rope_real
-        k_prod_real = k_real*rope_real - k_im * rope_im
-        k_prod_im = k_real*rope_im + k_im*rope_real
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = (q_real * rope_real).min().item(), (q_real * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real*rope_real'] = [vmin, vmax]
-            vmin, vmax = (q_im * rope_im).min().item(), (q_im * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im*rope_im'] = [vmin, vmax]
-            vmin, vmax = (q_real * rope_im).min().item(), (q_real * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real*rope_im'] = [vmin, vmax]
-            vmin, vmax = (q_im * rope_real).min().item(), (q_im * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im*rope_real'] = [vmin, vmax]
-            vmin, vmax = (k_real * rope_real).min().item(), (k_real * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real*rope_real'] = [vmin, vmax]
-            vmin, vmax = (k_im * rope_im).min().item(), (k_im * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im*rope_im'] = [vmin, vmax]
-            vmin, vmax = (k_real * rope_im).min().item(), (k_real * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real*rope_im'] = [vmin, vmax]
-            vmin, vmax = (k_im * rope_real).min().item(), (k_im * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im*rope_real'] = [vmin, vmax]
-            vmin, vmax = q_prod_real.min().item(), q_prod_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_prod_real'] = [vmin, vmax]
-            vmin, vmax = q_prod_im.min().item(), q_prod_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_prod_im'] = [vmin, vmax]
-            vmin, vmax = k_prod_real.min().item(), k_prod_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_prod_real'] = [vmin, vmax]
-            vmin, vmax = k_prod_im.min().item(), k_prod_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_prod_im'] = [vmin, vmax]
-        else:
-            vmax = (q_real*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real*rope_real'] = vmax
-            vmax = (q_im * rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im*rope_im'] = vmax
-            vmax = (q_real*rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_real*rope_im'] = vmax
-            vmax = (q_im*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_im*rope_real'] = vmax
-            vmax = (k_real*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real*rope_real'] = vmax
-            vmax = (k_im * rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im*rope_im'] = vmax
-            vmax = (k_real*rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_real*rope_im'] = vmax
-            vmax = (k_im*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_im*rope_real'] = vmax
-            vmax = q_prod_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_prod_real'] = vmax
-            vmax = q_prod_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.q_prod_im'] = vmax
-            vmax = k_prod_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_prod_real'] = vmax
-            vmax = k_prod_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.k_prod_im'] = vmax
-
-            
-    # TODO: HF need to uses different interleaving
-    # x = torch.cat((x_prod_real,x_prod_im),dim=3).view(*x.shape)
-    q_embed = torch.cat((q_prod_real,q_prod_im),dim=3).view(*q.shape)
-    k_embed = torch.cat((k_prod_real,k_prod_im),dim=3).view(*k.shape)
-    return q_embed.to(dtype=orig_dtype), k_embed.to(dtype=orig_dtype)
-
-
-def apply_rotary_pos_emb_qualcomm_single(name, x, cos, sin, position_ids, layer_idx=None, idx=None, unsqueeze_dim=1):
-    '''
-    Based on FacebookResearch's llama, provided by Carl
-    '''
-    # rope_real = rope_vals[0] # shape should be 1, 1, seqlen, head_dim/2
-    # rope_im = rope_vals[1] # shape should be 1, 1, seqlen, head_dim/2
-    orig_dtype = x.dtype
-    rope_real = cos[position_ids].unsqueeze(unsqueeze_dim)[..., : cos[position_ids].shape[-1] // 2] # shape有问题
-    rope_im = sin[position_ids].unsqueeze(unsqueeze_dim)[..., : sin[position_ids].shape[-1] // 2]
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = rope_real.min().item(), rope_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_real.{idx}'] = [vmin, vmax]
-            vmin, vmax = rope_im.min().item(), rope_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_im.{idx}'] = [vmin, vmax]
-        else:
-            vmax = rope_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_real.{idx}'] = vmax
-            vmax = rope_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.rope_im.{idx}'] = vmax
-
-    if static_quant:
-        if not symmetric:
-            rope_real = asymmetric_fake_quant(rope_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.rope_real.{idx}'],f'model.layers.{layer_idx}.self_attn.rope_real.{idx}')
-            rope_im = asymmetric_fake_quant(rope_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.rope_im.{idx}'],f'model.layers.{layer_idx}.self_attn.rope_im.{idx}')
-        # TODO: if symmetric:
-
-    # TODO: Why HF uses different coordinates from the paper
-    # x_real = x[:,:,:,:x.shape[-1]//2] # extract first half elements
-    # x_im = x[:,:,:,x.shape[-1]//2:] # extract second half elements
-    x_real = x[..., : x.shape[-1] // 2]
-    x_im = x[..., x.shape[-1] // 2 :]
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = x_real.min().item(), x_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real.{idx}'] = [vmin, vmax]
-            vmin, vmax = x_im.min().item(), x_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im.{idx}'] = [vmin, vmax]
-        else:
-            vmax = x_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real.{idx}'] = vmax
-            vmax = x_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im.{idx}'] = vmax
-
-    if static_quant:
-        if not symmetric:
-            x_real = asymmetric_fake_quant(x_real, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.{name}_real.{idx}'],f'model.layers.{layer_idx}.self_attn.{name}_real.{idx}')
-            x_im = asymmetric_fake_quant(x_im, dynamic_range_dict_load[f'model.layers.{layer_idx}.self_attn.{name}_im.{idx}'],f'model.layers.{layer_idx}.self_attn.{name}_im.{idx}')
-        # TODO: if symmetric:
-
-    # x_prod_real = x_real*rope_real - x_im * rope_im
-    # x_prod_im = x_real*rope_im + x_im*rope_real
-
-
-    x_prod_real = x_real*rope_real - x_im * rope_im
-    x_prod_im = x_real*rope_im + x_im*rope_real
-    if save_activation_dynamic_range:
-        if save_min_max:
-            vmin, vmax = (x_real * rope_real).min().item(), (x_real * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real*rope_real.{idx}'] = [vmin, vmax]
-            vmin, vmax = (x_im * rope_im).min().item(), (x_im * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im*rope_im.{idx}'] = [vmin, vmax]
-            vmin, vmax = (x_real * rope_im).min().item(), (x_real * rope_im).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real*rope_im.{idx}'] = [vmin, vmax]
-            vmin, vmax = (x_im * rope_real).min().item(), (x_im * rope_real).max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im*rope_real.{idx}'] = [vmin, vmax]
-            vmin, vmax = x_prod_real.min().item(), x_prod_real.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_prod_real.{idx}'] = [vmin, vmax]
-            vmin, vmax = x_prod_im.min().item(), x_prod_im.max().item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_prod_im.{idx}'] = [vmin, vmax]
-        else:
-            vmax = (x_real*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real*rope_real.{idx}'] = vmax
-            vmax = (x_im * rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im*rope_im.{idx}'] = vmax
-            vmax = (x_real*rope_im).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_real*rope_im.{idx}'] = vmax
-            vmax = (x_im*rope_real).abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_im*rope_real.{idx}'] = vmax
-            vmax = x_prod_real.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_prod_real.{idx}'] = vmax
-            vmax = x_prod_im.abs().amax(dim=None).item()
-            dynamic_range_dict[f'model.layers.{layer_idx}.self_attn.{name}_prod_im.{idx}'] = vmax
-
-
-    # TODO: HF need to uses different interleaving
-    # x = torch.cat((x_prod_real,x_prod_im),dim=3).view(*x.shape)
-    x_embed = torch.cat((x_prod_real,x_prod_im),dim=3).view(*x.shape)
-    # print(x_embed.to(dtype=orig_dtype).shape)
-    return x_embed.to(dtype=orig_dtype)
 
 
 class MiniCPMMLP(nn.Module):
@@ -642,56 +321,7 @@ class MiniCPMMLP(nn.Module):
         else:
             # if self.layer_idx ==0:
                 # print(x)
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = x.min().item(), x.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.up_proj.input'] = [vmin, vmax]
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.gate_proj.input'] = [vmin, vmax]
-                    vmin, vmax = self.gate_proj(x).min().item(), self.gate_proj(x).max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.gate_proj.output'] = [vmin, vmax]
-                    vmin, vmax = self.up_proj(x).min().item(), self.up_proj(x).max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.up_proj.output'] = [vmin, vmax]
-                    vmin, vmax = torch.sigmoid(self.gate_proj(x)).min().item(), torch.sigmoid(self.gate_proj(x)).max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.sigmoid'] = [vmin, vmax]
-                    vmin, vmax = self.act_fn(self.gate_proj(x)).min().item(), self.act_fn(self.gate_proj(x)).max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.act(gate).output'] = [vmin, vmax]
-                    vmin, vmax = (self.act_fn(self.gate_proj(x)) * self.up_proj(x)).min().item(), (self.act_fn(self.gate_proj(x)) * self.up_proj(x)).max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.down_proj.input'] = [vmin, vmax]
-                else:
-                    vmax = x.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.up_proj.input'] = vmax
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.gate_proj.input'] = vmax
-                    vmax = self.gate_proj(x).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.gate_proj.output'] = vmax
-                    vmax = self.up_proj(x).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.up_proj.output'] = vmax
-                    vmax = torch.sigmoid(self.gate_proj(x)).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.sigmoid'] = vmax
-                    vmax = self.act_fn(self.gate_proj(x)).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.act(gate).output'] = vmax
-                    vmax = (self.act_fn(self.gate_proj(x)) * self.up_proj(x)).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.down_proj.input'] = vmax
-            
-            if static_quant:
-                x1 = asymmetric_fake_quant(x, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.up_proj.input'],f'model.layers.{self.layer_idx}.mlp.up_proj.input')
-                gate_x = asymmetric_fake_quant(self.gate_proj(x1), dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.gate_proj.output'], f'model.layers.{self.layer_idx}.mlp.gate_proj.output')
-                up_x = asymmetric_fake_quant(self.up_proj(x1), dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.up_proj.output'],f'model.layers.{self.layer_idx}.mlp.up_proj.output')
-                # sigmoid = asymmetric_fake_quant(torch.sigmoid(gate_x), dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.sigmoid'])
-                sigmoid = torch.sigmoid(gate_x)
-                act_gate = asymmetric_fake_quant(gate_x*sigmoid, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.act(gate).output'],f'model.layers.{self.layer_idx}.mlp.act(gate).output')
-                down_in = asymmetric_fake_quant(act_gate * up_x, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.down_proj.input'],f'model.layers.{self.layer_idx}.mlp.down_proj.input')
-                down_proj = self.down_proj(down_in)
-                down_proj = asymmetric_fake_quant(down_proj, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp.down_proj.output'],f'model.layers.{self.layer_idx}.mlp.down_proj.output')
-            else:
-                down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = down_proj.min().item(), down_proj.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.down_proj.output'] = [vmin, vmax]
-                else:
-                    vmax = down_proj.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp.down_proj.output'] = vmax
+            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
             # if self.layer_idx ==0:
                 # print(down_proj)
         return down_proj
@@ -784,342 +414,6 @@ class MiniCPMAttention(nn.Module):
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
-    # def prepare_conv(self):
-    #     self.q_proj_conv = nn.Conv2d(self.hidden_size, self.num_heads * self.head_dim, 1, bias=False)
-    #     self.k_proj_conv = nn.Conv2d(self.hidden_size, self.num_key_value_heads * self.head_dim, 1, bias=False)
-    #     self.v_proj_conv = nn.Conv2d(self.hidden_size, self.num_key_value_heads * self.head_dim, 1, bias=False)
-    #     self.o_proj_conv = nn.Conv2d(self.num_heads * self.head_dim, self.hidden_size, 1, bias=False)
-
-    #     self.q_proj_conv.weight.data.copy_(self.q_proj.weight[:, :, None, None])
-    #     self.k_proj_conv.weight.data.copy_(self.k_proj.weight[:, :, None, None])
-    #     self.v_proj_conv.weight.data.copy_(self.v_proj.weight[:, :, None, None])
-    #     self.o_proj_conv.weight.data.copy_(self.o_proj.weight[:, :, None, None])
-
-    # def prepare_sha(self):
-    #     if not hasattr(self, 'forward_mha'):
-    #         self.q_proj_sha = nn.ModuleList([nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False) for _ in range(self.num_heads)])
-    #         self.k_proj_sha = nn.ModuleList([nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False) for _ in range(self.num_key_value_heads)])
-    #         self.v_proj_sha = nn.ModuleList([nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False) for _ in range(self.num_key_value_heads)])
-    #         self.o_proj_conv = nn.Conv2d(self.num_heads * self.head_dim, self.hidden_size, 1, bias=False)
-    #         for conv in self.q_proj_sha:
-    #             conv.half().cuda()
-    #         for conv in self.k_proj_sha:
-    #             conv.half().cuda()
-    #         for conv in self.v_proj_sha:
-    #             conv.half().cuda()
-    #         self.o_proj_conv.half().cuda()
-    #         self.cache_cat = nn.ModuleList([op.Concat(0) for _ in range(2)])  # 2: (key,value)
-    #         self.forward_mha = self.forward
-    #         self.forward = self.forward_sha
-
-    #     for i in range(self.num_heads):
-    #         self.q_proj_sha[i].weight.data.copy_(self.q_proj.weight[i*self.head_dim:(i+1)*self.head_dim, :, None, None])
-    #         self.o_proj_conv.weight.data.copy_(self.o_proj.weight[:,:,None, None])
-    #     for i in range(self.num_key_value_heads):
-    #         self.k_proj_sha[i].weight.data.copy_(self.k_proj.weight[i*self.head_dim:(i+1)*self.head_dim, :, None, None])
-    #         self.v_proj_sha[i].weight.data.copy_(self.v_proj.weight[i*self.head_dim:(i+1)*self.head_dim, :, None, None])
-
-    # def forward_sha(
-    #     self,
-    #     hidden_states: torch.Tensor,
-    #     attention_mask: Optional[torch.Tensor] = None,
-    #     position_ids: Optional[torch.LongTensor] = None,
-    #     past_key_value: Optional[Tuple[torch.Tensor]] = None,
-    #     output_attentions: bool = False,
-    #     use_cache: bool = False,
-    #     **kwargs, 
-    # ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    #     if "padding_mask" in kwargs:
-    #         warnings.warn(
-    #             "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-    #         )
-
-    #     bsz, q_len, _ = hidden_states.size()
-
-    #     if save_activation_dynamic_range:
-    #         if save_min_max:
-    #             vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.input'] = [vmin, vmax]
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.input'] = [vmin, vmax]
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.input'] = [vmin, vmax]
-    #         else:
-    #             vmax = hidden_states.abs().amax(dim=None).item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.input'] = vmax
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.input'] = vmax
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.input'] = vmax
-        
-    #     hidden_states = torch.reshape(hidden_states, (bsz, -1, 1, self.hidden_size))
-    #     hidden_states = hidden_states.transpose(1,3)
-    #     query_states = [q_proj(hidden_states).permute(0,2,3,1) for q_proj in self.q_proj_sha]
-    #     key_states = [k_proj(hidden_states).permute(0,2,3,1) for k_proj in self.k_proj_sha]
-    #     value_states = [v_proj(hidden_states).permute(0,2,3,1) for v_proj in self.v_proj_sha]
-    #     # print(len(query_states)) # 24
-    #     # print(len(key_states)) # 8
-    #     # print(len(value_states)) # 8
-    #     # print(query_states[0].shape) # [1,1,225,64]
-    #     # print(key_states[0].shape) 
-    #     # print(value_states[0].shape)
-
-    #     # NOTE: save_dynamic_range for sha:
-
-    #     for idx, q_state in enumerate(query_states):
-    #         if save_activation_dynamic_range:
-    #             if save_min_max:
-    #                 vmin, vmax = q_state.min().item(), q_state.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.output.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 vmax = q_state.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.output.{idx}'] = vmax
-
-    #     for idx, k_state in enumerate(key_states):
-    #         if save_activation_dynamic_range:
-    #             if save_min_max:
-    #                 vmin, vmax = k_state.min().item(), k_state.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.output.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 vmax = k_state.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.output.{idx}'] = vmax
-
-    #     for idx, v_state in enumerate(value_states):
-    #         if save_activation_dynamic_range:
-    #             if save_min_max:
-    #                 vmin, vmax = v_state.min().item(), v_state.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.output.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 vmax = v_state.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.output.{idx}'] = vmax
-
-
-    #     kv_seq_len = key_states[0].shape[-2]
-    #     if past_key_value is not None:
-    #         if self.layer_idx is None:
-    #             raise ValueError(
-    #                 f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
-    #                 "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
-    #                 "with a layer index."
-    #             )
-    #         kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        
-    #     cos, sin = self.rotary_emb(value_states[0].to(torch.float32), seq_len=kv_seq_len)
-
-    #     if save_activation_dynamic_range:
-    #         for idx, q_state in enumerate(query_states):
-    #             if save_min_max:
-    #                 vmin, vmax = rotate_half(q_state).min().item(), rotate_half(q_state).max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_q_states.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 vmax = rotate_half(q_state).abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_q_states.{idx}'] = vmax
-
-    #         for idx, k_state in enumerate(key_states):
-    #             if save_min_max:
-    #                 vmin, vmax = cos.min().item(), cos.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.cos'] = [vmin, vmax]
-    #                 vmin, vmax = sin.min().item(), sin.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.sin'] = [vmin, vmax]
-
-    #                 vmin, vmax = rotate_half(k_state).min().item(), rotate_half(k_state).max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_k_states.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 vmax = cos.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.cos'] = vmax
-    #                 vmax = sin.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.sin'] = vmax
-
-    #                 vmax = rotate_half(k_state).abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_k_states.{idx}'] = vmax
-
-    #         if use_qualcomm:
-    #             query_states = [apply_rotary_pos_emb_qualcomm_single("q", q, cos, sin, position_ids, self.layer_idx, idx) for idx, q in enumerate(query_states)]
-    #             key_states = [apply_rotary_pos_emb_qualcomm_single("k", k, cos, sin, position_ids, self.layer_idx, idx) for idx, k in enumerate(key_states)]
-    #         else: # NOT ready
-    #             query_states = [apply_rotary_pos_emb(q, q, cos, sin, position_ids, self.layer_idx, idx)[0] for idx, q in enumerate(query_states)]
-    #             key_states = [apply_rotary_pos_emb(k, k, cos, sin, position_ids, self.layer_idx, idx)[0] for idx, k in enumerate(key_states)]
-    #     else:
-    #         if use_qualcomm:
-    #             query_states = [apply_rotary_pos_emb_qualcomm_single("q", q, cos, sin, position_ids, idx) for idx, q in enumerate(query_states)]
-    #             key_states = [apply_rotary_pos_emb_qualcomm_single("k", k, cos, sin, position_ids, idx) for idx, k in enumerate(key_states)]
-    #         else: # NOT ready
-    #             query_states = [apply_rotary_pos_emb(q, q, cos, sin, position_ids, idx)[0] for idx, q in enumerate(query_states)]
-    #             key_states = [apply_rotary_pos_emb(k, k, cos, sin, position_ids, idx)[0] for idx, k in enumerate(key_states)]
-    #     # NOTE: not sure 
-    #     # key_states = [k.transpose(2, 3) for k in key_states]
-
-    #     if save_activation_dynamic_range:
-    #         if save_min_max:
-    #             for idx, q_state in enumerate(query_states):
-    #                 vmin, vmax = q_state.min().item(), q_state.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output.{idx}'] = [vmin, vmax]
-    #             for idx, k_state in enumerate(key_states):
-    #                 vmin, vmax = k_state.min().item(), k_state.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output.{idx}'] = [vmin, vmax]
-    #         else:
-    #             for idx, q_state in enumerate(query_states):
-    #                 vmax = q_state.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output.{idx}'] = vmax
-    #             for idx, k_state in enumerate(key_states):
-    #                 vmax = k_state.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output.{idx}'] = vmax
-        
-    #     # if self.return_new_key_value_only:
-    #     #     present_key_value = (tuple(key_states), tuple(value_states)) if use_cache else None
-    #     #     if self.concat_head_in_batch_dimension:
-    #     #         present_key_value = tuple(cat(*present) for cat, present in zip(self.cache_cat, present_key_value)) if use_cache else None
-
-    #     # if past_key_value is not None:
-    #     #     # print(past_key_value)
-    #     #     # reuse k, v, self_attention
-    #     #     # if self.concat_head_in_batch_dimension:
-    #     #     if False:
-    #     #         past_key, past_value = [[past[head:head + 1, ...] for head in range(self.num_key_value_heads)] for past in past_key_value]
-    #     #     else:
-    #     #         past_key, past_value = past_key_value
-    #     #     key_states = [torch.cat([pk, k], dim=3) for pk, k in zip(past_key, key_states)]
-    #     #     value_states = [torch.cat([pv, v], dim=2) for pv, v in zip(past_value, value_states)]
-    #     #     if self.layer_idx == 0:
-    #     #         past_key_value. += key_states.shape[-2]            
-    #     # FIXME: 弃用，维护多个麻烦
-
-    #     # if past_key_value is not None:
-    #     #     cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-    #     #     new_k_states = []
-    #     #     new_v_states = []
-    #     #     for idx, (k,v) in enumerate(zip(key_states, value_states)):
-    #     #         update_k, update_v = past_key_value.update_fix(k, v, self.layer_idx, idx, cache_kwargs)
-    #     #         new_k_states.append(update_k)
-    #     #         new_v_states.append(update_v)
-    #     #     key_states = new_k_states
-    #     #     value_states = new_v_states
-    #     #     for k in key_states:
-    #     #         print(k.shape)
-    #     #     print(len(key_states))
-
-    #     # NOTE: 不需要了。因为use_cache=False
-    #     # if save_activation_dynamic_range:
-    #     #     if save_min_max:
-    #     #         for idx, k_state in enumerate(key_states):
-    #     #             vmin, vmax = k_state.min().item(), k_state.max().item()
-    #     #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_k_states.{idx}'] = [vmin, vmax]
-    #     #         for idx, v_state in enumerate(value_states):
-    #     #             vmin, vmax = v_state.min().item(), v_state.max().item()
-    #     #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_v_states.{idx}'] = [vmin, vmax]
-    #     #     else:
-    #     #         for idx, k_state in enumerate(key_states):
-    #     #             vmax = k_state.abs().amax(dim=None).item()
-    #     #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_k_states.{idx}'] = vmax
-    #     #         for idx, v_state in enumerate(value_states):
-    #     #             vmax = v_state.abs().amax(dim=None).item()
-    #     #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_v_states.{idx}'] = vmax
-        
-    #     # NOTE: repeat kv
-    #     new_key_states = []
-    #     new_value_states = []
-    #     for key_state in key_states:
-    #         new_key_states.extend([key_state]*self.num_key_value_groups)
-    #     for value_state in value_states:
-    #         new_value_states.extend([value_state]*self.num_key_value_groups)
-    #     key_states = new_key_states
-    #     value_states = new_value_states
-    #     # if not self.return_new_key_value_only:
-    #     #     present_key_value = (tuple(key_states), tuple(value_states)) if use_cache else None
-    #     attn_weights = [torch.matmul(q, k.transpose(2,3)) / math.sqrt(self.head_dim) for q, k in zip(query_states, key_states)]
-    #     if save_activation_dynamic_range:
-    #         if save_min_max:
-    #             for idx, attn_matrix in enumerate(attn_weights):
-    #                 vmin, vmax = attn_matrix.min().item(), attn_matrix.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights.{idx}'] = [vmin, vmax]
-    #         else:
-    #             for idx, attn_matrix in enumerate(attn_weights):
-    #                 vmax = attn_matrix.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights.{idx}'] = vmax
-
-    #     if attn_weights[0].size() != (bsz, 1, q_len, kv_seq_len):
-    #         raise ValueError(
-    #             f"Attention weights should be of size {(bsz, 1, q_len, kv_seq_len)}, but is"
-    #             f" {attn_weights[0].size()}"
-    #         )
-
-    #     if attention_mask is not None:
-    #         if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-    #             raise ValueError(
-    #                 f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-    #             )
-    #         if save_activation_dynamic_range:
-    #             if save_min_max:
-    #                 vmin, vmax = attention_mask.min().item(), attention_mask.max().item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.causal_mask'] = [vmin, vmax]
-    #             else:
-    #                 vmax = attention_mask.abs().amax(dim=None).item()
-    #                 dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.causal_mask'] = vmax
-
-    #         attn_weights = [aw + attention_mask for aw in attn_weights]
-
-    #         if save_activation_dynamic_range:
-    #             if save_min_max:
-    #                 for idx in range(len(attn_weights)):
-    #                     head_attn_weights = attn_weights[idx]
-    #                     vmin, vmax = head_attn_weights.min().item(), head_attn_weights.max().item()
-    #                     dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask.{idx}'] = [vmin, vmax]
-    #             else:
-    #                 for idx in range(len(attn_weights)):
-    #                     head_attn_weights = attn_weights[idx]
-    #                     vmax = head_attn_weights.abs().amax(dim=None).item()
-    #                     dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask.{idx}'] = vmax
-
-    #     # upcast attention to fp32
-    #     attn_weights = [nn.functional.softmax(aw, dim=-1, dtype=torch.float32).to(query_states[0].dtype) for aw in attn_weights]
-    #     for idx, weight in enumerate(attn_weights):
-    #         key = f'model.layers.{self.layer_idx}.self_attn.softmax.output.{idx}'
-    #         if save_min_max:
-    #             vmin, vmax = weight.min().item(), weight.max().item()
-    #             dynamic_range_dict[key] = [vmin, vmax]
-    #         else:
-    #             vmax = weight.abs().amax(dim=None).item()
-    #             dynamic_range_dict[key] = vmax
-                
-    #     attn_output = [torch.matmul(aw, v) for aw, v in zip(attn_weights, value_states)]
-    #     for idx, weight in enumerate(attn_output):
-    #         key = f'model.layers.{self.layer_idx}.self_attn.attn_output.{idx}'
-    #         if save_min_max:
-    #             vmin, vmax = weight.min().item(), weight.max().item()
-    #             dynamic_range_dict[key] = [vmin, vmax]
-    #         else:
-    #             vmax = weight.abs().amax(dim=None).item()
-    #             dynamic_range_dict[key] = vmax
-
-    #     if attn_output[0].size() != (bsz, 1, q_len, self.head_dim):
-    #         raise ValueError(
-    #             f"`attn_output` should be of size {(bsz, 1, q_len, self.head_dim)}, but is"
-    #             f" {attn_output[0].size()}"
-    #         )
-
-    #     attn_output = torch.cat(attn_output, dim=3)
-    #     attn_output = attn_output.permute(0, 3, 1, 2)
-    #     if save_activation_dynamic_range:
-    #         if save_min_max:
-    #             vmin, vmax = attn_output.min().item(), attn_output.max().item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.input'] = [vmin, vmax]
-    #         else:
-    #             vmax = attn_output.abs().amax(dim=None).item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.input'] = vmax
-
-    #     attn_output = self.o_proj_conv(attn_output)
-    #     attn_output = attn_output.transpose(1,3)
-    #     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
-
-    #     if save_activation_dynamic_range:
-    #         if save_min_max:
-    #             vmin, vmax = attn_output.min().item(), attn_output.max().item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.output'] = [vmin, vmax]
-    #         else:
-    #             vmax = attn_output.abs().amax(dim=None).item()
-    #             dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.output'] = vmax
-
-    #     if not output_attentions:
-    #         attn_weights = None
-
-    #     return attn_output, attn_weights, past_key_value
-
     def forward(
             self,
             hidden_states: torch.Tensor,
@@ -1159,47 +453,11 @@ class MiniCPMAttention(nn.Module):
                 # print(hidden_states.shape)
                 # print(hidden_states.tolist())
             # print(hidden_states)
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.input'] = [vmin, vmax]
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.input'] = [vmin, vmax]
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.input'] = [vmin, vmax]
-                else:
-                    vmax = hidden_states.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.input'] = vmax
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.input'] = vmax
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.input'] = vmax
-
-            if static_quant:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.q_proj.input'],f'model.layers.{self.layer_idx}.self_attn.q_proj.input')
-
             query_states = self.q_proj(hidden_states) # 在
             # print(query_states)
             # exit(0)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
-
-            if static_quant:
-                query_states = asymmetric_fake_quant(query_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.q_proj.output'],f'model.layers.{self.layer_idx}.self_attn.q_proj.output')
-                key_states = asymmetric_fake_quant(key_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.k_proj.output'],f'model.layers.{self.layer_idx}.self_attn.k_proj.output')
-                value_states = asymmetric_fake_quant(value_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.v_proj.output'],f'model.layers.{self.layer_idx}.self_attn.v_proj.output')
-
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = query_states.min().item(), query_states.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.output'] = [vmin, vmax]
-                    vmin, vmax = key_states.min().item(), key_states.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.output'] = [vmin, vmax]
-                    vmin, vmax = value_states.min().item(), value_states.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.output'] = [vmin, vmax]
-                else:
-                    vmax = query_states.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_proj.output'] = vmax
-                    vmax = key_states.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_proj.output'] = vmax
-                    vmax = value_states.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.v_proj.output'] = vmax
             # if self.layer_idx ==0:
                 # print(query_states, key_states, value_states)
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -1216,61 +474,9 @@ class MiniCPMAttention(nn.Module):
                 )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states.to(torch.float32), seq_len=kv_seq_len)
-        # print(value_states.shape) # 1,8,677,64
-        # print(query_states.shape) # 1,24,677,64
-        # print(key_states.shape)
-        # print(cos.shape) # 677, 64
-        # print(sin.shape) # 677, 64
-        if static_quant:
-            cos = asymmetric_fake_quant(cos, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.cos'],f'model.layers.{self.layer_idx}.self_attn.cos')
-            sin = asymmetric_fake_quant(sin, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.sin'],f'model.layers.{self.layer_idx}.self_attn.sin')
 
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = cos.min().item(), cos.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.cos'] = [vmin, vmax]
-                vmin, vmax = sin.min().item(), sin.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.sin'] = [vmin, vmax]
-                vmin, vmax = rotate_half(query_states).min().item(), rotate_half(query_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_q_states'] = [vmin, vmax]
-                vmin, vmax = rotate_half(key_states).min().item(), rotate_half(key_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_k_states'] = [vmin, vmax] # not used when use_qualcomm
-            else:
-                vmax = cos.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.cos'] = vmax
-                vmax = sin.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.sin'] = vmax
-                vmax = rotate_half(query_states).abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_q_states'] = vmax
-                vmax = rotate_half(key_states).abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.rotate_k_states'] = vmax
-            if use_qualcomm:
-                query_states, key_states = apply_rotary_pos_emb_qualcomm(query_states, key_states, cos, sin, position_ids, self.layer_idx)
-            else:
-                query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids, self.layer_idx)
-        else:
-            if use_qualcomm:
-                query_states, key_states = apply_rotary_pos_emb_qualcomm(query_states, key_states, cos, sin, position_ids, self.layer_idx)
-            else:
-                query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids, self.layer_idx)
-            
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = (query_states).min().item(), (query_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output'] = [vmin, vmax]
-                vmin, vmax = (key_states).min().item(), (key_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output'] = [vmin, vmax]
-            else: 
-                vmax = (query_states).abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output'] = vmax
-                vmax = (key_states).abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output'] = vmax
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
-        # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-        if static_quant:
-            query_states = asymmetric_fake_quant(query_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output'],f'model.layers.{self.layer_idx}.self_attn.q_rotary_emb.output')
-            key_states = asymmetric_fake_quant(key_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output'],f'model.layers.{self.layer_idx}.self_attn.k_rotary_emb.output')
-            
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -1278,36 +484,7 @@ class MiniCPMAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = (key_states).min().item(), (key_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_k_states'] = [vmin, vmax]
-                vmin, vmax = (value_states).min().item(), (value_states).max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_v_states'] = [vmin, vmax]
-            else: 
-                vmax = key_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_k_states'] = vmax
-                vmax = value_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.concat_v_states'] = vmax
-        
-        if static_quant:
-            key_states = asymmetric_fake_quant(key_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.concat_k_states'],f'model.layers.{self.layer_idx}.self_attn.concat_k_states')
-            value_states = asymmetric_fake_quant(value_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.concat_v_states'],f'model.layers.{self.layer_idx}.self_attn.concat_v_states')
-
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-        
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights'] = [vmin, vmax]
-            else:
-                vmax = attn_weights.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights'] = vmax
-        
-        if static_quant:
-            attn_weights = asymmetric_fake_quant(attn_weights, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.attn_weights'],f'model.layers.{self.layer_idx}.self_attn.attn_weights')
-
-        # attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
             raise ValueError(
                 f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
@@ -1319,58 +496,12 @@ class MiniCPMAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attention_mask.min().item(), attention_mask.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.causal_mask'] = [vmin, vmax]
-                else:
-                    vmax = attention_mask.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.causal_mask'] = vmax
-                    
-            # if static_quant:
-                # attention_mask = asymmetric_fake_quant(attention_mask, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.causal_mask'],f'model.layers.{self.layer_idx}.self_attn.causal_mask')
-            
-            
             attn_weights = attn_weights + attention_mask
-
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask'] = [vmin, vmax]
-                else:
-                    vmax = attn_weights.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask'] = vmax
-
-            # if static_quant:
-            #     attn_weights = asymmetric_fake_quant(attn_weights, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask'],f'model.layers.{self.layer_idx}.self_attn.attn_weights_add_mask')
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        # attn_output = torch.matmul(attn_weights, value_states)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.softmax.output'] = [vmin, vmax]
-            else:
-                vmax = attn_weights.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.softmax.output'] = vmax
-        
-        if static_quant:
-            attn_weights = asymmetric_fake_quant(attn_weights, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.softmax.output'],f'model.layers.{self.layer_idx}.self_attn.softmax.output')
-
         attn_output = torch.matmul(attn_weights, value_states)
-
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_output'] = [vmin, vmax]
-            else:
-                vmax = attn_output.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.attn_output'] = vmax
-
-        if static_quant:
-            attn_output = asymmetric_fake_quant(attn_output, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.attn_output'],f'model.layers.{self.layer_idx}.self_attn.attn_output')
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -1387,25 +518,7 @@ class MiniCPMAttention(nn.Module):
             o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.config.pretraining_tp, dim=1)
             attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.config.pretraining_tp)])
         else:
-            # attn_output = self.o_proj(attn_output)
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.input'] = [vmin, vmax]
-                else:
-                    vmax = attn_output.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.input'] = vmax
             attn_output = self.o_proj(attn_output)
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.output'] = [vmin, vmax]
-                else:
-                    vmax = attn_output.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn.o_proj.output'] = vmax
-
-            if static_quant:
-                attn_output = asymmetric_fake_quant(attn_output, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn.o_proj.output'],f'model.layers.{self.layer_idx}.self_attn.o_proj.output')
 
         if not output_attentions:
             attn_weights = None
@@ -1775,16 +888,6 @@ class MiniCPMDecoderLayer(nn.Module):
         )
 
         hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn_add_residual'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.self_attn_add_residual'] = vmax
-
-        if static_quant:
-            hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.self_attn_add_residual'],f'model.layers.{self.layer_idx}.self_attn_add_residual')
 
         # Fully Connected
         residual = hidden_states
@@ -1792,17 +895,6 @@ class MiniCPMDecoderLayer(nn.Module):
 
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
-
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp_add_residual'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'model.layers.{self.layer_idx}.mlp_add_residual'] = vmax
-
-        if static_quant:
-            hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'model.layers.{self.layer_idx}.mlp_add_residual'],f'model.layers.{self.layer_idx}.mlp_add_residual')
 
         outputs = (hidden_states,)
 
@@ -2041,18 +1133,6 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
 
         # embed positions
         hidden_states = inputs_embeds
-        vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-        # print(vmin, vmax)
-        # if save_activation_dynamic_range:
-        #     if save_min_max:
-        #         vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-        #         dynamic_range_dict['model.inputs_embeds'] = [vmin, vmax]
-        #     else:
-        #         vmax = hidden_states.abs().amax(dim=None).item()
-        #         dynamic_range_dict['model.inputs_embeds'] = vmax
-
-        # if static_quant:
-        #     hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'model.inputs_embeds'],f'model.inputs_embeds')
         # print(hidden_states)
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
@@ -2210,28 +1290,7 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
             logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = (hidden_states / (self.config.hidden_size / self.config.dim_model_base)).min().item(), (hidden_states / (self.config.hidden_size / self.config.dim_model_base)).max().item()
-                    dynamic_range_dict[f'lm_head.input'] = [vmin, vmax]
-                else:
-                    vmax = (hidden_states / (self.config.hidden_size / self.config.dim_model_base)).abs().amax(dim=None).item()
-                    dynamic_range_dict[f'lm_head.input'] = vmax
-
-            # if static_quant:
-            #     hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'lm_head.input'],f'lm_head.input')
-
             logits = self.lm_head(hidden_states / (self.config.hidden_size / self.config.dim_model_base))
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = logits.min().item(), logits.max().item()
-                    dynamic_range_dict[f'lm_head.output'] = [vmin, vmax]
-                else:
-                    vmax = logits.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'lm_head.output'] = vmax
-            if static_quant:
-                logits = asymmetric_fake_quant(logits, dynamic_range_dict_load[f'lm_head.output'],f'lm_head.output')
-
         logits = logits.float()
 
         loss = None
@@ -2251,25 +1310,6 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        if save_activation_dynamic_range:
-            import os
-            import json
-            from datetime import datetime
-            import uuid
-
-            # 获取当前时间并格式化为字符串
-            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            # 生成唯一的标识符
-            unique_id = str(uuid.uuid4())
-
-            # 构建文件名
-            filename = f"llm_activation_dynamic_range_{current_time}_{unique_id}.json"
-            # filename = f"activation_dynamic_range_{current_time}.json"
-            with open(os.path.join("/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/activate/", filename), 'w') as f:
-                json.dump(dynamic_range_dict, f)
-                
-
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
@@ -2280,11 +1320,8 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
 
     def prepare_inputs_for_generation(
             self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):  
-        # past_key_values=None # NOTE: set to None在使用vit的embedding的时候会导致维度不匹配
-        # print(past_key_values)
+    ):
         if past_key_values is not None:
-            # print(past_key_values)
             if isinstance(past_key_values, Cache):
                 cache_length = past_key_values.get_seq_length()
                 past_length = past_key_values.seen_tokens

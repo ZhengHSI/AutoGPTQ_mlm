@@ -43,94 +43,8 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.utils import logging
-import json
+
 logger = logging.get_logger(__name__)
-
-# save_activation_dynamic_range = True
-# save_min_max = True
-# # use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
-# # use_qualcomm = True
-# static_quant = False
-
-save_activation_dynamic_range = False
-save_min_max = False
-# use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
-# use_qualcomm = True
-static_quant = True
-
-dynamic_range_dict = {}
-symmetric=False
-
-dynamic_range_dict_path = '/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/modeling/minicpm_new/max_min_values.json'
-with open(dynamic_range_dict_path, 'r') as file:
-    dynamic_range_dict_load = json.load(file)
-
-# max_int = 2**16-1
-# def asymmetric_fake_quant(tensor, min_max_list):
-#     min_val = torch.tensor(min_max_list[0], dtype=torch.float32, device=tensor.device)
-#     max_val = torch.tensor(min_max_list[1], dtype=torch.float32, device=tensor.device)
-#     max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
-    
-#     # 计算s和z
-#     s = (max_val - min_val) / max_int_t
-#     # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
-#     # z = max_int_t - torch.round(max_val / s)
-#     z = (-torch.round(min_val / s)).clamp_(0, max_int)
-#     # 执行量化和反量化操作
-#     tensor_quantized = torch.clamp(torch.round(tensor / s)+ z, 0, max_int)
-#     tensor_dequantized = (tensor_quantized - z) * s
-#     # 计算均方误差
-#     mse = torch.mean((tensor - tensor_dequantized) ** 2)
-
-#     threshold=0.01
-#     if mse > threshold:
-#         print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}")
-#         # print(tensor_quantized)
-#         # print(tensor_dequantized)
-#     if torch.isnan(mse).any():
-#         print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-#     # print(tensor)
-#     # print(tensor_dequantized)
-#     return tensor_dequantized
-
-max_int=32767
-def asymmetric_fake_quant(tensor, min_max_list, name=None):
-    # max_abs_value = max(abs(x) for x in min_max_list)
-    # min_1 = - max_abs_value
-    # max_1 = max_abs_value
-    fix_ratio = 1.0
-    if min_max_list[0]<0:
-        min_1=min_max_list[0]*fix_ratio
-    else:
-        min_1=min_max_list[0]
-    if min_max_list[1]>0:
-        max_1=min_max_list[1]*fix_ratio
-    else:
-        max_1=min_max_list[1]
-    min_val = torch.tensor(min_1, dtype=torch.float32, device=tensor.device)
-    max_val = torch.tensor(max_1, dtype=torch.float32, device=tensor.device)
-    max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
-    
-    # 计算s和z
-    s = (max_val - min_val) / (2 * max_int_t + 1)
-    # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
-    z = max_int_t - torch.round(max_val / s).clamp_(-max_int-1, max_int)
-    # 执行量化和反量化操作
-    tensor_quantized = torch.clamp(torch.round(tensor / s + z), -max_int - 1, max_int)
-    tensor_dequantized = (tensor_quantized - z) * s
-    # # 计算均方误差
-    mse = torch.mean((tensor - tensor_dequantized) ** 2)
-
-    threshold=10
-    if mse > threshold:
-        print(name, f" High MSE: {mse.item()}, min_max_list: {min_max_list}")
-        # print("tensor: ", tensor)
-        # print("tensor_dequantized: ", tensor_dequantized)
-        # exit(0)
-    if torch.isnan(mse).any():
-        print(name, f" Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-        exit(0)
-    return tensor_dequantized
 
 class SiglipVisionConfig(PretrainedConfig):
     r"""
@@ -444,7 +358,7 @@ class SiglipAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     # Copied from transformers.models.clip.modeling_clip.CLIPAttention.__init__
-    def __init__(self, config, layer_idx):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -457,7 +371,6 @@ class SiglipAttention(nn.Module):
             )
         self.scale = self.head_dim**-0.5
         self.dropout = config.attention_dropout
-        self.layer_idx=layer_idx
 
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
@@ -474,50 +387,9 @@ class SiglipAttention(nn.Module):
 
         batch_size, q_len, _ = hidden_states.size()
 
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.input'] = [vmin, vmax]
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.k_proj.input'] = [vmin, vmax]
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.v_proj.input'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.input'] = vmax
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.k_proj.input'] = vmax
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.v_proj.input'] = vmax
-        
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.input'],f'vpm.layers.{self.layer_idx}.self_attn.q_proj.input')
-
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
-
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = query_states.min().item(), query_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.output'] = [vmin, vmax]
-                vmin, vmax = key_states.min().item(), key_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.k_proj.output'] = [vmin, vmax]
-                vmin, vmax = value_states.min().item(), value_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.v_proj.output'] = [vmin, vmax]
-            else:
-                vmax = query_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.output'] = vmax
-                vmax = key_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.k_proj.output'] = vmax
-                vmax = value_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.v_proj.output'] = vmax
-
-        if static_quant:
-            if not symmetric:
-                query_states = asymmetric_fake_quant(query_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.q_proj.output'],f'vpm.layers.{self.layer_idx}.self_attn.q_proj.output')
-                key_states = asymmetric_fake_quant(key_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.k_proj.output'],f'vpm.layers.{self.layer_idx}.self_attn.k_proj.output')
-                # print(value_states)
-                value_states = asymmetric_fake_quant(value_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.v_proj.output'],'vpm.layers.{self.layer_idx}.self_attn.v_proj.output') # 有问题
-                # print("*"*50)
-                # print(value_states)
 
         query_states = query_states.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -525,18 +397,6 @@ class SiglipAttention(nn.Module):
 
         k_v_seq_len = key_states.shape[-2]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scale
-
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_weights'] = [vmin, vmax]
-            else:
-                vmax = attn_weights.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_weights'] = vmax
-        
-        if static_quant:
-            if not symmetric:
-                attn_weights = asymmetric_fake_quant(attn_weights, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.attn_weights'],f'vpm.layers.{self.layer_idx}.self_attn.attn_weights')
 
         if attn_weights.size() != (batch_size, self.num_heads, q_len, k_v_seq_len):
             raise ValueError(
@@ -550,70 +410,11 @@ class SiglipAttention(nn.Module):
                     f"Attention mask should be of size {(batch_size, 1, q_len, k_v_seq_len)}, but is {attention_mask.size()}"
                 )
             attn_weights = attn_weights + attention_mask
-            
-            #  这里不知道为什么没有mask
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attention_mask.min().item(), attention_mask.max().item()
-                    dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.causal_mask'] = [vmin, vmax]
-                else:
-                    vmax = attention_mask.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.causal_mask'] = vmax
-            
 
-            if save_activation_dynamic_range:
-                if save_min_max:
-                    vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                    dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_weights_add_mask'] = [vmin, vmax]
-                else:
-                    vmax = attn_weights.abs().amax(dim=None).item()
-                    dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_weights_add_mask'] = vmax
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_weights.min().item(), attn_weights.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.softmax.output'] = [vmin, vmax]
-            else:
-                vmax = attn_weights.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.softmax.output'] = vmax
-
-        # NOTE: 不太能非对称量化
-        if static_quant:
-            if not symmetric:
-                # def ensure_range(min_max_list, min_val=1e-4, max_val=1-1e-4):
-                #     # 确保最小值不小于 min_val
-                #     if min_max_list[0] < min_val:
-                #         min_max_list[0] = min_val
-                    
-                #     # 确保最大值不大于 max_val
-                #     if min_max_list[1] > max_val:
-                #         min_max_list[1] = max_val
-                    
-                #     return min_max_list
-                # print(attn_weights)
-                attn_weights = asymmetric_fake_quant(attn_weights, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.softmax.output'],f'vpm.layers.{self.layer_idx}.self_attn.softmax.output')
-                # print(attn_weights)
-                # exit(0)
-                # if torch.isnan(attn_weights).any():
-                #     print("Error: NaN values detected in attention weights after quantization.")
-                #     print(attn_weights)
-                #     exit(0)
         attn_output = torch.matmul(attn_weights, value_states)
-
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_output'] = [vmin, vmax]
-            else:
-                vmax = attn_output.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.attn_output'] = vmax
-
-        if static_quant:
-            if not symmetric:
-                attn_output = asymmetric_fake_quant(attn_output, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.attn_output'],f'vpm.layers.{self.layer_idx}.self_attn.attn_output')
-        
 
         if attn_output.size() != (batch_size, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -624,29 +425,8 @@ class SiglipAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(batch_size, q_len, self.embed_dim)
 
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.input'] = [vmin, vmax]
-            else:
-                vmax = attn_output.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.input'] = vmax
-        # if static_quant:
-        #     if not symmetric:
-        #         attn_output = asymmetric_fake_quant(attn_output, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.input'],f'vpm.layers.{self.layer_idx}.self_attn.o_proj.input')
-
         attn_output = self.out_proj(attn_output)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = attn_output.min().item(), attn_output.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.output'] = [vmin, vmax]
-            else:
-                vmax = attn_output.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.output'] = vmax
 
-        if static_quant:
-            if not symmetric:
-                attn_output = asymmetric_fake_quant(attn_output, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn.o_proj.output'],f'vpm.layers.{self.layer_idx}.self_attn.o_proj.output')
         return attn_output, attn_weights
 
 
@@ -839,79 +619,34 @@ class SiglipFlashAttention2(SiglipAttention):
 
 # Copied from transformers.models.clip.modeling_clip.CLIPMLP with CLIP->Siglip
 class SiglipMLP(nn.Module):
-    def __init__(self, config, layer_idx):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.activation_fn = ACT2FN[config.hidden_act]
-        self.layer_idx=layer_idx
         self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
         self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc1.input'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc1.input'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.mlp.fc1.input'],f'vpm.layers.{self.layer_idx}.mlp.fc1.input')
-        
         hidden_states = self.fc1(hidden_states)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc1.output'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc1.output'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.mlp.fc1.output'],f'vpm.layers.{self.layer_idx}.mlp.fc1.output')
-        
         hidden_states = self.activation_fn(hidden_states)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.act.output'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.act.output'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.mlp.act.output'],f'vpm.layers.{self.layer_idx}.mlp.act.output')
-        
         hidden_states = self.fc2(hidden_states)
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc2.output'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp.fc2.output'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.mlp.fc2.output'],f'vpm.layers.{self.layer_idx}.mlp.fc2.output')
         return hidden_states
 
 
 # Copied from transformers.models.clip.modeling_clip.CLIPEncoderLayer with CLIP->Siglip
 class SiglipEncoderLayer(nn.Module):
-    def __init__(self, config: SiglipVisionConfig, layer_idx):
+    def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.self_attn = (
-            SiglipAttention(config, layer_idx=layer_idx)
+            SiglipAttention(config)
             if not self._use_flash_attention_2
             else SiglipFlashAttention2(config)
         )
         self.layer_norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
-        self.mlp = SiglipMLP(config, layer_idx)
+        self.mlp = SiglipMLP(config)
         self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
-        self.layer_idx = layer_idx
 
     def forward(
         self,
@@ -931,47 +666,18 @@ class SiglipEncoderLayer(nn.Module):
         """
         residual = hidden_states
 
-        # TODO 量化输入
         hidden_states = self.layer_norm1(hidden_states)
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
         )
-
-        # TODO 量化输入
         hidden_states = residual + hidden_states
 
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn_add_residual'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.self_attn_add_residual'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.self_attn_add_residual'],f'vpm.layers.{self.layer_idx}.self_attn_add_residual')
         residual = hidden_states
-
         hidden_states = self.layer_norm2(hidden_states)
-
-        # 量化输出在mlp里面了
         hidden_states = self.mlp(hidden_states)
-
         hidden_states = residual + hidden_states
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp_add_residual'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict[f'vpm.layers.{self.layer_idx}.mlp_add_residual'] = vmax
-        
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.layers.{self.layer_idx}.mlp_add_residual'],f'vpm.layers.{self.layer_idx}.mlp_add_residual')
-
 
         outputs = (hidden_states,)
 
@@ -1064,7 +770,7 @@ class SiglipEncoder(nn.Module):
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        self.layers = nn.ModuleList([SiglipEncoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     # Ignore copy
@@ -1106,17 +812,6 @@ class SiglipEncoder(nn.Module):
         all_attentions = () if output_attentions else None
 
         hidden_states = inputs_embeds
-        if save_activation_dynamic_range:
-            if save_min_max:
-                vmin, vmax = hidden_states.min().item(), hidden_states.max().item()
-                dynamic_range_dict['vpm.inputs_embeds'] = [vmin, vmax]
-            else:
-                vmax = hidden_states.abs().amax(dim=None).item()
-                dynamic_range_dict['vpm.inputs_embeds'] = vmax
-        if static_quant:
-            if not symmetric:
-                hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.inputs_embeds'],f'vpm.inputs_embeds')
-        
         for encoder_layer in self.layers:
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
@@ -1233,25 +928,6 @@ class SiglipVisionTransformer(SiglipPreTrainedModel):
 
         if not return_dict:
             return (last_hidden_state, None) + encoder_outputs[1:]
-
-        if save_activation_dynamic_range:
-            import os
-            import json
-            from datetime import datetime
-            import uuid
-
-            # 获取当前时间并格式化为字符串
-            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            # 生成唯一的标识符
-            unique_id = str(uuid.uuid4())
-
-            # 构建文件名
-            filename = f"vpm_activation_dynamic_range_{current_time}_{unique_id}.json"
-            # filename = f"activation_dynamic_range_{current_time}.json"
-            with open(os.path.join("/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/activate/", filename), 'w') as f:
-                json.dump(dynamic_range_dict, f)
-                
 
         return BaseModelOutputWithPooling(
             last_hidden_state=last_hidden_state,
