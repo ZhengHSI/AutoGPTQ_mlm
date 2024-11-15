@@ -48,12 +48,16 @@ logger = logging.get_logger(__name__)
 
 # save_activation_dynamic_range = True
 # save_min_max = True
+# # use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
+# # use_qualcomm = True
 # static_quant = False
-# dynamic_range_dict = {}
 
 save_activation_dynamic_range = False
 save_min_max = False
+# use_negative_100 = True # NOTE: pro-1b在modeling_attn_mask_utils.py里面调整
+# use_qualcomm = True
 static_quant = True
+
 dynamic_range_dict = {}
 symmetric=False
 
@@ -61,31 +65,36 @@ dynamic_range_dict_path = '/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/model
 with open(dynamic_range_dict_path, 'r') as file:
     dynamic_range_dict_load = json.load(file)
 
-def asymmetric_fake_quant(tensor, min_max_list, name=None):
-    dtype = tensor.dtype
-    tensor = tensor.to(torch.float32)
-    min_val = torch.tensor(min_max_list[0], dtype=torch.float32, device=tensor.device)
-    max_val = torch.tensor(min_max_list[1], dtype=torch.float32, device=tensor.device)
-    max_int = 2**16-1
-    max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
+# max_int = 2**16-1
+# def asymmetric_fake_quant(tensor, min_max_list):
+#     min_val = torch.tensor(min_max_list[0], dtype=torch.float32, device=tensor.device)
+#     max_val = torch.tensor(min_max_list[1], dtype=torch.float32, device=tensor.device)
+#     max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
     
-    s = (max_val - min_val) / max_int_t
-    s = s.to(torch.float32)
-    z = (-torch.round(min_val / s)).clamp_(0, max_int)
-    z = z.to(torch.float32)
-    tensor_quantized = torch.clamp(torch.round(tensor/s)+z, 0, max_int)
-    tensor_dequantized = (tensor_quantized - z) * s
-    mse = torch.mean((tensor - tensor_dequantized) ** 2)
+#     # 计算s和z
+#     s = (max_val - min_val) / max_int_t
+#     # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
+#     # z = max_int_t - torch.round(max_val / s)
+#     z = (-torch.round(min_val / s)).clamp_(0, max_int)
+#     # 执行量化和反量化操作
+#     tensor_quantized = torch.clamp(torch.round(tensor / s)+ z, 0, max_int)
+#     tensor_dequantized = (tensor_quantized - z) * s
+#     # 计算均方误差
+#     mse = torch.mean((tensor - tensor_dequantized) ** 2)
 
-    threshold=0.01
-    if mse > threshold:
-        print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
-    if torch.isnan(mse).any():
-        print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
-    return tensor_dequantized.to(dtype)
+#     threshold=0.01
+#     if mse > threshold:
+#         print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}")
+#         # print(tensor_quantized)
+#         # print(tensor_dequantized)
+#     if torch.isnan(mse).any():
+#         print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
+#     # print(tensor)
+#     # print(tensor_dequantized)
+#     return tensor_dequantized
 
+max_int=32767
 # def asymmetric_fake_quant(tensor, min_max_list, name=None):
-#     max_int=32767
 #     # max_abs_value = max(abs(x) for x in min_max_list)
 #     # min_1 = - max_abs_value
 #     # max_1 = max_abs_value
@@ -110,18 +119,41 @@ def asymmetric_fake_quant(tensor, min_max_list, name=None):
 #     tensor_quantized = torch.clamp(torch.round(tensor / s + z), -max_int - 1, max_int)
 #     tensor_dequantized = (tensor_quantized - z) * s
 #     # # 计算均方误差
-#     # mse = torch.mean((tensor - tensor_dequantized) ** 2)
+#     mse = torch.mean((tensor - tensor_dequantized) ** 2)
 
-#     # threshold=10
-#     # if mse > threshold:
-#     #     print(name, f" High MSE: {mse.item()}, min_max_list: {min_max_list}")
-#     #     # print("tensor: ", tensor)
-#     #     # print("tensor_dequantized: ", tensor_dequantized)
-#     #     # exit(0)
-#     # if torch.isnan(mse).any():
-#     #     print(name, f" Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-#     #     exit(0)
+#     threshold=10
+#     if mse > threshold:
+#         print(name, f" High MSE: {mse.item()}, min_max_list: {min_max_list}")
+#         # print("tensor: ", tensor)
+#         # print("tensor_dequantized: ", tensor_dequantized)
+#         # exit(0)
+#     if torch.isnan(mse).any():
+#         print(name, f" Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
+#         exit(0)
 #     return tensor_dequantized
+
+def asymmetric_fake_quant(tensor, min_max_list, name=None):
+    dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
+    min_val = torch.tensor(min_max_list[0], dtype=torch.float32, device=tensor.device)
+    max_val = torch.tensor(min_max_list[1], dtype=torch.float32, device=tensor.device)
+    max_int = 2**16-1
+    max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
+    
+    s = (max_val - min_val) / max_int_t
+    s = s.to(torch.float32)
+    z = (-torch.round(min_val / s)).clamp_(0, max_int)
+    z = z.to(torch.float32)
+    tensor_quantized = torch.clamp(torch.round(tensor/s)+z, 0, max_int)
+    tensor_dequantized = (tensor_quantized - z) * s
+    mse = torch.mean((tensor - tensor_dequantized) ** 2)
+
+    threshold=0.01
+    if mse > threshold:
+        print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
+    if torch.isnan(mse).any():
+        print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
+    return tensor_dequantized.to(dtype)
 
 class SiglipVisionConfig(PretrainedConfig):
     r"""
@@ -922,6 +954,7 @@ class SiglipEncoderLayer(nn.Module):
         """
         residual = hidden_states
 
+        # TODO 量化输入
         hidden_states = self.layer_norm1(hidden_states)
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
@@ -929,6 +962,7 @@ class SiglipEncoderLayer(nn.Module):
             output_attentions=output_attentions,
         )
 
+        # TODO 量化输入
         hidden_states = residual + hidden_states
 
         if save_activation_dynamic_range:
@@ -1102,7 +1136,6 @@ class SiglipEncoder(nn.Module):
             else:
                 vmax = hidden_states.abs().amax(dim=None).item()
                 dynamic_range_dict['vpm.inputs_embeds'] = vmax
-
         if static_quant:
             if not symmetric:
                 hidden_states = asymmetric_fake_quant(hidden_states, dynamic_range_dict_load[f'vpm.inputs_embeds'],f'vpm.inputs_embeds')
@@ -1239,7 +1272,7 @@ class SiglipVisionTransformer(SiglipPreTrainedModel):
             # 构建文件名
             filename = f"vpm_activation_dynamic_range_{current_time}_{unique_id}.json"
             # filename = f"activation_dynamic_range_{current_time}.json"
-            with open(os.path.join("/data/zyq/activation_dynamic_range", filename), 'w') as f:
+            with open(os.path.join("/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/activate/", filename), 'w') as f:
                 json.dump(dynamic_range_dict, f)
                 
 
