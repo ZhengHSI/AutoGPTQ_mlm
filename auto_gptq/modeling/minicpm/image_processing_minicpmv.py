@@ -129,7 +129,8 @@ class MiniCPMVImageProcessor(BaseImageProcessor):
         self.version = kwargs.pop("version", 2.0)
 
     def ensure_divide(self, length, patch_size):
-        return max(round(length / patch_size) * patch_size, patch_size)
+        # return max(round(length / patch_size) * patch_size, patch_size)
+        return max(int(length / patch_size) * patch_size, patch_size)
 
     def find_best_resize(self,
                          original_size,
@@ -144,6 +145,7 @@ class MiniCPMVImageProcessor(BaseImageProcessor):
             width = int(height * r)
         best_width = self.ensure_divide(width, patch_size)
         best_height = self.ensure_divide(height, patch_size)
+        assert best_width * best_height <= scale_resolution * scale_resolution
         return (best_width, best_height)
 
     def get_refine_size(self,

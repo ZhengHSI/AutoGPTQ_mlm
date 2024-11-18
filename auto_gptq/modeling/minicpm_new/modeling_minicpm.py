@@ -83,7 +83,7 @@ _CONFIG_FOR_DOC = "MiniCPMConfig"
 save_activation_dynamic_range = False
 save_min_max = False
 use_qualcomm = True
-static_quant = True
+static_quant = False
 dynamic_range_dict = {}
 symmetric=False
 dynamic_range_dict_path = '/home/workspace/code/git/AutoGPTQ_mlm/auto_gptq/modeling/minicpm_new/max_min_values.json'
@@ -107,52 +107,13 @@ def asymmetric_fake_quant(tensor, min_max_list, name=None):
     z = z.to(torch.float32)
     tensor_quantized = torch.clamp(torch.round(tensor/s)+z, 0, max_int)
     tensor_dequantized = (tensor_quantized - z) * s
-    mse = torch.mean((tensor - tensor_dequantized) ** 2)
-    threshold=0.01
-    if mse > threshold:
-        print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
-    if torch.isnan(mse).any():
-        print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
+    # mse = torch.mean((tensor - tensor_dequantized) ** 2)
+    # threshold=0.01
+    # if mse > threshold:
+    #     print(f"High MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
+    # if torch.isnan(mse).any():
+    #     print(f"Nan MSE: {mse.item()}, min_max_list: {min_max_list}, name: {name}")
     return tensor_dequantized.to(dtype)
-
-# def asymmetric_fake_quant(tensor, min_max_list, name=None):
-#     # max_abs_value = max(abs(x) for x in min_max_list)
-#     # min_1 = - max_abs_value
-#     # max_1 = max_abs_value
-#     max_int = 32767
-#     fix_ratio = 1.0
-#     if min_max_list[0]<0:
-#         min_1=min_max_list[0]*fix_ratio
-#     else:
-#         min_1=min_max_list[0]
-#     if min_max_list[1]>0:
-#         max_1=min_max_list[1]*fix_ratio
-#     else:
-#         max_1=min_max_list[1]
-#     min_val = torch.tensor(min_1, dtype=torch.float32, device=tensor.device)
-#     max_val = torch.tensor(max_1, dtype=torch.float32, device=tensor.device)
-#     max_int_t = torch.tensor(max_int, dtype=torch.float32, device=tensor.device)
-    
-#     # 计算s和z
-#     s = (max_val - min_val) / (2 * max_int_t + 1)
-#     # z = torch.clamp(max_int_t - torch.round(max_val / s), -max_int -1 , max_int)
-#     z = max_int_t - torch.round(max_val / s).clamp_(-max_int-1, max_int)
-#     # 执行量化和反量化操作
-#     tensor_quantized = torch.clamp(torch.round(tensor / s + z), -max_int - 1, max_int)
-#     tensor_dequantized = (tensor_quantized - z) * s
-#     # 计算均方误差
-#     mse = torch.mean((tensor - tensor_dequantized) ** 2)
-
-#     threshold=10
-#     if mse > threshold:
-#         print(name, f" High MSE: {mse.item()}, min_max_list: {min_max_list}")
-#         # print("tensor: ", tensor)
-#         # print("tensor_dequantized: ", tensor_dequantized)
-#         # exit(0)
-#     if torch.isnan(mse).any():
-#         print(name, f" Nan MSE: {mse.item()}, min_max_list: {min_max_list}")
-#         exit(0)
-#     return tensor_dequantized
 
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)

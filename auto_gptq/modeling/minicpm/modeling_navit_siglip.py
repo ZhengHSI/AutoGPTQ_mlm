@@ -49,14 +49,14 @@ logger = logging.get_logger(__name__)
 static_quant = False
 max_int = 32767
 
-import json
-dynamic_range_dict_path_1 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_vit_quant.json'
-with open(dynamic_range_dict_path_1, 'r') as file:
-    dynamic_range_dict_1 = json.load(file)
+# import json
+# dynamic_range_dict_path_1 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_vit_quant.json'
+# with open(dynamic_range_dict_path_1, 'r') as file:
+#     dynamic_range_dict_1 = json.load(file)
 
-dynamic_range_dict_path_2 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_from_fp.json'
-with open(dynamic_range_dict_path_2, 'r') as file:
-    dynamic_range_dict_2 = json.load(file)
+# dynamic_range_dict_path_2 = '/home/workspace/code/git/AutoGPTQ_mlm/max_abs_value_from_fp.json'
+# with open(dynamic_range_dict_path_2, 'r') as file:
+#     dynamic_range_dict_2 = json.load(file)
 
 def symmetric_fake_quant(tensor, scale):
     # print(scale)

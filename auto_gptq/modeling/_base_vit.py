@@ -88,6 +88,8 @@ def nested_move_to_device(v, device):
 class BaseGPTQForVIT(nn.Module, PushToHubMixin):
     layer_type: str = None
     layers_block_name: str = None
+    resampler_block_name: str = None
+    resampler_layer_modules: List[str] = None
     outside_layer_modules: List[str] = None
     inside_layer_modules: List[List[str]] = None
     lm_head_name: str = "lm_head"
@@ -399,6 +401,64 @@ class BaseGPTQForVIT(nn.Module, PushToHubMixin):
             del layer_inputs
             layer_inputs, layer_outputs = layer_outputs, []  # TODO: is it really OK to cache only the first positional argument?
             torch.cuda.empty_cache()
+
+        # resampler量化
+        resampler_block_name = self.resampler_block_name
+        resampler_layer_modules = self.resampler_layer_modules
+        if resampler_layer_modules:
+            logger.info(f"Start quantizing resampler")
+            layer = get_module_by_name_prefix(self.model, resampler_block_name)
+            force_layer_back_to_cpu = False
+            if get_device(layer) == CPU:
+                move_to_device(layer, CUDA_0)
+                force_layer_back_to_cpu = True
+            cur_layer_device = get_device(layer)
+
+            fullset = find_layers(layer)
+            gptq = {}
+            for name in fullset:
+                gptq[name] = GPTQ(fullset[name])
+                gptq[name].quantizer.configure(
+                    self.quantize_config.bits,
+                    perchannel=True,
+                    sym=self.quantize_config.sym,
+                    mse=False,
+                )
+
+            def add_batch(name):
+                def tmp(_, inp, out):
+                    # gptq is mutable.
+                    gptq[name].add_batch(inp[0].data, out.data)  # noqa: F821
+
+                return tmp
+
+            handles = []
+            for name in fullset:
+                handles.append(fullset[name].register_forward_hook(add_batch(name)))
+            for j in range(num_batches):
+                layer_input = []
+                for k, layer_inp in enumerate(layer_inputs[j]):
+                    layer_input.append(move_to_device(layer_inp, cur_layer_device))
+                layer(*layer_input, examples[j]['tgt_sizes'][0].squeeze(1))
+
+            for h in handles:
+                h.remove()
+
+            for name in fullset:
+                logger.info(f"Quantizing {name} in resampler...")
+                scale, zero, g_idx = gptq[name].fasterquant(
+                    percdamp=self.quantize_config.damp_percent,
+                    group_size=self.quantize_config.group_size,
+                    actorder=self.quantize_config.desc_act,
+                    static_groups=self.quantize_config.static_groups,
+                )
+                quantizers[f"{resampler_block_name}.{name}"] = (
+                    gptq[name].quantizer.to(CPU if force_layer_back_to_cpu else cur_layer_device),
+                    move_to_device(scale, CPU if force_layer_back_to_cpu else cur_layer_device),
+                    move_to_device(zero, CPU if force_layer_back_to_cpu else cur_layer_device),
+                    move_to_device(g_idx, CPU if force_layer_back_to_cpu else cur_layer_device),
+                )
+                gptq[name].free()
 
         pack_model(
             model=self.model,

@@ -53,7 +53,7 @@ logger = logging.get_logger(__name__)
 
 save_activation_dynamic_range = False
 save_min_max = False
-static_quant = True
+static_quant = False
 dynamic_range_dict = {}
 symmetric=False
 

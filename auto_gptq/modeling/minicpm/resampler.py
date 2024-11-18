@@ -138,7 +138,8 @@ class Resampler(nn.Module):
 
         self._adjust_pos_cache(tgt_sizes, device=device)
 
-        max_patch_len = torch.max(patch_len)
+        # max_patch_len = torch.max(patch_len)
+        max_patch_len = 1024
         key_padding_mask = torch.zeros((bs, max_patch_len), dtype=torch.bool, device=device)
 
         pos_embed = []
@@ -149,6 +150,7 @@ class Resampler(nn.Module):
 
         pos_embed = torch.nn.utils.rnn.pad_sequence(
             pos_embed, batch_first=True, padding_value=0.0).permute(1, 0, 2)  # BLD => L * B * D
+        pos_embed = torch.nn.functional.pad(pos_embed, (0, 0, 0, 0, 0, 1024 - pos_embed.size(0)), 'constant', 0.0)
 
         x = self.kv_proj(x)  # B * L * D
         x = self.ln_kv(x).permute(1, 0, 2)  # L * B * D

@@ -23,6 +23,9 @@ class VITGPTQ(BaseGPTQForVIT):
         ["mlp.fc1"],
         ["mlp.fc2"],
     ]
+    #添加resampler模块量化，现在是吧resampler也量化了
+    resampler_block_name = "resampler"
+    resampler_layer_modules = ["kv_proj", "attn.out_proj"]
 
     fused_attn_module_type = FusedLlamaAttentionForQuantizedModel
     fused_mlp_module_type = FusedLlamaMLPForQuantizedModel
