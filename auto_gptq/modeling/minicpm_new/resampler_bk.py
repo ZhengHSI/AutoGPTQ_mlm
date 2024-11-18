@@ -96,8 +96,7 @@ class Resampler(nn.Module):
         else:
             self.kv_proj = nn.Identity()
 
-        # self.attn = MultiheadAttention(embed_dim, num_heads)
-        self.attn = ResamplerAttention(embed_dim, num_heads)
+        self.attn = MultiheadAttention(embed_dim, num_heads)
         self.ln_q = norm_layer(embed_dim)
         self.ln_kv = norm_layer(embed_dim)
 
@@ -139,89 +138,38 @@ class Resampler(nn.Module):
 
         self._adjust_pos_cache(tgt_sizes, device=device)
 
-        max_patch_len = 1024
-        # key_padding_mask = torch.zeros((bs, max_patch_len), dtype=torch.bool, device=device)
+        max_patch_len = torch.max(patch_len)
+        key_padding_mask = torch.zeros((bs, max_patch_len), dtype=torch.bool, device=device)
 
         pos_embed = []
         for i in range(bs):
             tgt_h, tgt_w = tgt_sizes[i]
             pos_embed.append(self.pos_embed[:tgt_h, :tgt_w, :].reshape((tgt_h * tgt_w, -1)).to(dtype))  # patches * D
-            # key_padding_mask[i, patch_len[i]:] = True
+            key_padding_mask[i, patch_len[i]:] = True
 
         pos_embed = torch.nn.utils.rnn.pad_sequence(
-            pos_embed, batch_first=True, padding_value=0.0)  # B * L * D
-        pos_embed = torch.nn.functional.pad(pos_embed, (0, 0, 0, 1024 - pos_embed.size(1)), 'constant', 0.0)
+            pos_embed, batch_first=True, padding_value=0.0).permute(1, 0, 2)  # BLD => L * B * D
 
-        x = self.ln_kv(self.kv_proj(x))    # B * L * D
+        x = self.kv_proj(x)  # B * L * D
+        x = self.ln_kv(x).permute(1, 0, 2)  # L * B * D
 
         q = self.ln_q(self.query)  # Q * D
 
-        x = self.attn(
-            q.unsqueeze(0).repeat(bs, 1, 1),
-            x + pos_embed,  # B * L * D +  B * L * D
+        out = self.attn(
+            self._repeat(q, bs),  # Q * B * D
+            x + pos_embed,  # L * B * D +  L * B * D
             x,
-            # key_padding_mask=key_padding_mask)[0].permute(1, 0, 2)
-            )[0]
-        #  out: B * Q * D
+            key_padding_mask=key_padding_mask)[0]
+        #  out: Q * B * D
+        x = out.permute(1, 0, 2)  # B * Q * D
 
         x = self.ln_post(x)
         x = x @ self.proj
         return x
 
-class ResamplerAttention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper"""
+    def _repeat(self, query, N: int):
+        return query.unsqueeze(1).repeat(1, N, 1)
 
-    # Copied from transformers.models.clip.modeling_clip.CLIPAttention.__init__
-    def __init__(self, embed_dim, num_heads):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = self.embed_dim // self.num_heads
-        if self.head_dim * self.num_heads != self.embed_dim:
-            raise ValueError(
-                f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`:"
-                f" {self.num_heads})."
-            )
-        self.scale = self.head_dim**-0.5
-
-        self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
-        self.in_proj_bias = nn.Parameter(torch.empty(3 * embed_dim))
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias = True)
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ):
-        """Input shape: Batch x Time x Channel"""
-
-        batch_size, q_len, _ = q.shape
-        kv_len = k.shape[1]
-
-        w_q, w_k, w_v = self.in_proj_weight.split(self.embed_dim)
-        b_q, b_k, b_v = self.in_proj_bias.split(self.embed_dim)
-        q = linear(q, w_q, b_q)
-        k = linear(k, w_k, b_k)
-        v = linear(v, w_v, b_v)
-        q = q.contiguous().view(batch_size,  q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.contiguous().view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.contiguous().view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        attn_weights = torch.matmul(q, k.transpose(2, 3)) * self.scale
-
-        # # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=3, dtype=torch.float32).to(q.dtype)
-        # attn_weights = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, v)
-        # attn_output = F.scaled_dot_product_attention(q, k, v)
-
-        attn_output = attn_output.permute(2, 0, 1, 3).contiguous().view(batch_size * q_len, self.embed_dim)
-
-        attn_output = self.out_proj(attn_output)
-        attn_output = attn_output.contiguous().view(q_len, batch_size, self.embed_dim).transpose(1, 0)
-
-        return attn_output, None
 
 class MultiheadAttention(nn.MultiheadAttention):
     def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, 
